@@ -368,7 +368,8 @@ def create_spawned_pokemon(pokemon_data, level=None):
         "ability": ability,
         "base_stats": base_stats.copy(),
         "calculated_stats": calculated_stats,
-        "evs": evs.copy()
+        "evs": evs.copy(),
+        "current_hp": calculated_stats.get("hp", 0)
     }
     return spawned_pokemon
 def get_pokemon_sprite_url(pokemon_name, is_back_sprite=False):
@@ -1332,6 +1333,9 @@ def enhance_caught_pokemon_data(caught_pokemon, pokemon_db):
             nature,
             enhanced_data["evs"]
         )
+    # Initialize current_hp to max HP if not already set
+    if "current_hp" not in enhanced_data and "calculated_stats" in enhanced_data:
+        enhanced_data["current_hp"] = enhanced_data["calculated_stats"].get("hp", 0)
     return enhanced_data
 @bot.command()
 async def info(ctx, order_number: int = 0):
@@ -3909,9 +3913,6 @@ class MoveReplaceView(View):
         await interaction.response.edit_message(embed=embed, view=None)
 
 
-async def send_battle_interface_to_players(battle_id, challenger_id, target_id, challenger_party, target_party, challenger_name, target_name, channel):
-    """Send battle interface embed to both players"""
-    pass
 
 
 
@@ -4115,37 +4116,155 @@ def is_all_pokemon_fainted(party):
     # All Pokemon have HP <= 0
     return True
 
-async def end_battle_with_winner(battle_id, winner_id, winner_name, channel):
-    """End battle and send winner message"""
+def is_battle_over(battle_data):
+    """Check if battle is over by examining if all Pokemon in either party are fainted"""
+    challenger_party = battle_data.get('challenger_party', [])
+    target_party = battle_data.get('target_party', [])
+    
+    challenger_fainted = is_all_pokemon_fainted(challenger_party)
+    target_fainted = is_all_pokemon_fainted(target_party)
+    
+    return challenger_fainted or target_fainted
+
+async def finalize_battle(battle_data, winner_id, winner_name, channel, is_flee=False):
+    """Centralized battle finalization that sends winner message and final interface"""
+    battle_id = battle_data.get('battle_id') or 'unknown'
+    
+    # Remove from active battles
     if battle_id in active_battles:
         del active_battles[battle_id]
     
-    # Send winner message (await to ensure proper ordering)
-    await channel.send(f"<@{winner_id}> has won")
+    # Send winner message (no embed, simple message as requested) - but not for flee
+    if not is_flee:
+        await channel.send(f"<@{winner_id}> won the battle!")
+    
+    # Send final battle interface
+    challenger_name = battle_data.get('challenger_name', 'Unknown')
+    target_name = battle_data.get('target_name', 'Unknown')
+    final_embed = await create_final_battle_interface(battle_data, challenger_name, target_name)
+    await channel.send(embed=final_embed)
+    
+    # Add battle end activity for consistency
+    if 'battle_activities' not in battle_data:
+        battle_data['battle_activities'] = []
+    
+    battle_data['battle_activities'].append({
+        'type': 'battle_end',
+        'message': f"The battle has ended. {winner_name} is victorious!"
+    })
+
+async def create_final_battle_interface(battle_data, challenger_name, target_name):
+    """Create final battle interface showing all Pokemon status"""
+    challenger_party = battle_data.get('challenger_party', [])
+    target_party = battle_data.get('target_party', [])
+    
+    embed = discord.Embed(
+        title=f"**Battle between {challenger_name} 🙏🏻 and {target_name}.**",
+        description="The battle has ended.",
+        color=0xFFD700
+    )
+    
+    # Challenger's Pokemon list
+    challenger_pokemon_lines = []
+    for p in challenger_party:
+        max_hp = p.get('calculated_stats', {}).get('hp', 0)
+        current_hp = p.get('current_hp', max_hp)
+        gender_emoji = p.get('gender', '<:unknown:1401145566863560755>')
+        order_number = p.get('order', 'N/A')
+        
+        if current_hp <= 0:
+            status = "• Fainted"
+        else:
+            status = f"• {current_hp}/{max_hp} HP"
+        
+        challenger_pokemon_lines.append(f"L{p['level']} {p['iv_percentage']}% {p['name'].title()}{gender_emoji} (#{order_number}) {status}")
+    
+    challenger_pokemon_list = "\n".join(challenger_pokemon_lines)
+    embed.add_field(name=challenger_name, value=challenger_pokemon_list, inline=False)
+    
+    # Target's Pokemon list  
+    target_pokemon_lines = []
+    for p in target_party:
+        max_hp = p.get('calculated_stats', {}).get('hp', 0)
+        current_hp = p.get('current_hp', max_hp)
+        gender_emoji = p.get('gender', '<:unknown:1401145566863560755>')
+        order_number = p.get('order', 'N/A')
+        
+        if current_hp <= 0:
+            status = "• Fainted"
+        else:
+            status = f"• {current_hp}/{max_hp} HP"
+        
+        target_pokemon_lines.append(f"L{p['level']} {p['iv_percentage']}% {p['name'].title()}{gender_emoji} (#{order_number}) {status}")
+    
+    target_pokemon_list = "\n".join(target_pokemon_lines)
+    embed.add_field(name=target_name, value=target_pokemon_list, inline=False)
+    
+    return embed
+
+async def end_battle_with_winner(battle_id, winner_id, winner_name, channel, is_flee=False):
+    """End battle and send winner message with final interface"""
+    battle_data = None
+    if battle_id in active_battles:
+        battle_data = active_battles[battle_id]
+        del active_battles[battle_id]
+    
+    # Use centralized finalize_battle function
+    if battle_data:
+        await finalize_battle(battle_data, winner_id, winner_name, channel)
+    else:
+        # Fallback if no battle data
+        await channel.send(f"<@{winner_id}> won the battle!")
 
 def check_battle_end_conditions(battle_id, attacker_party, defender_party, attacker_id, defender_id, attacker_name, defender_name, channel):
     """Check if battle should end due to all Pokemon being fainted"""
     messages = []
+    
+    # Get battle format information from active battles
+    battle_data = active_battles.get(battle_id, {})
+    battle_format = battle_data.get('battle_format', '6v6')
+    pokemon_needed = battle_data.get('pokemon_needed', 6)
     
     attacker_fainted = is_all_pokemon_fainted(attacker_party)
     defender_fainted = is_all_pokemon_fainted(defender_party)
     
     # Handle simultaneous double faint - declare attacker as winner (consistent rule)
     if attacker_fainted and defender_fainted:
-        messages.append(f"Both trainers' Pokémon have fainted!")
+        if pokemon_needed == 1:
+            messages.append(f"Both trainers' Pokémon have fainted!")
+        else:
+            messages.append(f"All of both trainers' Pokémon have fainted!")
         messages.append(f"In a double knockout, {attacker_name} wins by priority!")
         asyncio.create_task(end_battle_with_winner(battle_id, attacker_id, attacker_name, channel))
         return messages, True
     
     # Check if defender's party is fully fainted
     if defender_fainted:
-        messages.append(f"All of {defender_name}'s Pokémon have fainted!")
+        if pokemon_needed == 1:
+            # Get the Pokemon name for 1v1 battles
+            fainted_pokemon = defender_party[0] if defender_party else None
+            if fainted_pokemon:
+                pokemon_name = fainted_pokemon.get('name', 'Pokémon').title()
+                messages.append(f"{defender_name}'s {pokemon_name} has fainted!")
+            else:
+                messages.append(f"{defender_name}'s Pokémon has fainted!")
+        else:
+            messages.append(f"All of {defender_name}'s Pokémon have fainted!")
         asyncio.create_task(end_battle_with_winner(battle_id, attacker_id, attacker_name, channel))
         return messages, True
     
     # Check if attacker's party is fully fainted
     if attacker_fainted:
-        messages.append(f"All of {attacker_name}'s Pokémon have fainted!")
+        if pokemon_needed == 1:
+            # Get the Pokemon name for 1v1 battles
+            fainted_pokemon = attacker_party[0] if attacker_party else None
+            if fainted_pokemon:
+                pokemon_name = fainted_pokemon.get('name', 'Pokémon').title()
+                messages.append(f"{attacker_name}'s {pokemon_name} has fainted!")
+            else:
+                messages.append(f"{attacker_name}'s Pokémon has fainted!")
+        else:
+            messages.append(f"All of {attacker_name}'s Pokémon have fainted!")
         asyncio.create_task(end_battle_with_winner(battle_id, defender_id, defender_name, channel))
         return messages, True
     
@@ -4215,7 +4334,7 @@ async def execute_battle_move(attacker, defender, move_name, channel, attacker_n
     
     # Move usage message
     move_display_name = move_data.get('name', move_name.replace('-', ' ').title())
-    messages.append(f"**{attacker['name'].title()} used {move_display_name}!**")
+    messages.append(f"{attacker['name'].title()} used {move_display_name}!")
     
     # Calculate type effectiveness
     attacker_pokemon_data = get_pokemon_by_name(attacker['name'])
@@ -4237,11 +4356,11 @@ async def execute_battle_move(attacker, defender, move_name, channel, attacker_n
         
         # Type effectiveness message
         if type_effectiveness > 1.0:
-            messages.append("**It's super effective!**")
+            messages.append("It's super effective!")
         elif type_effectiveness < 1.0 and type_effectiveness > 0:
-            messages.append("**It's not very effective!**")
+            messages.append("It's not very effective!")
         elif type_effectiveness == 0:
-            messages.append("**It had no effect!**")
+            messages.append("It had no effect!")
     
     # Check for status effects
     status_effect = get_move_status_effect(move_name, move_data)
@@ -4249,14 +4368,14 @@ async def execute_battle_move(attacker, defender, move_name, channel, attacker_n
         chance_roll = random.randint(1, 100)
         if chance_roll <= status_effect['chance']:
             status_name = status_effect['type'].title()
-            messages.append(f"**It inflicted {status_name}!**")
+            messages.append(f"It inflicted {status_name}!")
     
     # Check for stat changes
     stat_changes = get_move_stat_changes(move_name, move_data)
     if stat_changes:
         target_pokemon = attacker if stat_changes['target'] == 'user' else defender
         stat_message = stat_changes['message'].format(pokemon=target_pokemon['name'].title())
-        messages.append(f"**{stat_message}**")
+        messages.append(f"{stat_message}")
     
     # Apply HP damage system
     if damage > 0:
@@ -4280,18 +4399,14 @@ async def execute_battle_move(attacker, defender, move_name, channel, attacker_n
         new_hp = max(0, current_hp - damage)
         defender['current_hp'] = new_hp
         
-        # Show HP status after damage (normal text - no bold)
-        messages.append(f"{defender['name'].title()} has {new_hp}/{max_hp} HP remaining.")
+        # HP status removed as requested - don't show HP information after Pokemon get hurt
         
         # Check if defender faints
         if new_hp <= 0:
-            messages.append(f"**{defender['name'].title()} has fainted!**")
+            messages.append(f"{defender['name'].title()} has fainted!")
             # Note: Battle end is now handled by the calling function that checks all Pokemon
     
-    # If defender didn't faint, continue battle
-    messages.append("")  # Add blank line
-    messages.append("The next round will begin in 5 seconds.")
-    
+    # Return messages without "next round" text - this will be handled at activity level
     return messages
 
 def create_battle_interface_embed(current_pokemon, party_pokemon, opponent_name=None):
@@ -4375,6 +4490,8 @@ class BattleInterfaceView(View):
         self.user_pokemon = user_pokemon
         self.user_party = user_party
         self.channel = channel
+        self._interaction_lock = asyncio.Lock()  # Proper asyncio lock for interaction handling
+        self._processing_interaction = False  # Track if an interaction is currently being processed
         
         # Add move selection dropdown
         move_options = []
@@ -4433,6 +4550,14 @@ class BattleInterfaceView(View):
         else:
             self.pokemon_switch.disabled = True
 
+    def _set_processing_interaction(self, processing: bool):
+        """Set the interaction processing state to prevent concurrent interactions"""
+        self._processing_interaction = processing
+        
+    def _is_processing_interaction(self) -> bool:
+        """Check if an interaction is currently being processed"""
+        return self._processing_interaction
+
     async def send_immediate_switch_activity(self, battle_data, challenger_name, target_name):
         """Send immediate activity for Pokemon switches"""
         activities = battle_data.get('battle_activities', [])
@@ -4447,7 +4572,7 @@ class BattleInterfaceView(View):
         for switch_activity in switch_activities:
             # Create the embed for immediate switch notification (no "next round" message)
             embed = discord.Embed(
-                title=f"Battle between {challenger_name} and {target_name}",
+                title=f"**Battle between {challenger_name} and {target_name}**",
                 description=switch_activity['message'],
                 color=0xFFD700  # Gold color
             )
@@ -4461,30 +4586,240 @@ class BattleInterfaceView(View):
         # Don't clear activities - keep them for combining with subsequent actions
 
     async def send_battle_activity_embed(self, battle_data, challenger_name, target_name, clear_activities=True):
-        """Send an embed showing all recent battle activities"""
+        """Send a clean embed showing all battle activities in organized format"""
         activities = battle_data.get('battle_activities', [])
         
         if not activities:
             return
         
-        # Get the latest activity messages
-        activity_messages = []
-        for activity in activities[-5:]:  # Show last 5 activities
-            activity_messages.append(activity['message'])
+        # Check for battle end or flee actions
+        has_flee = any(activity.get('type') == 'flee' for activity in activities)
+        has_battle_end = any(activity.get('type') == 'battle_end' for activity in activities)
         
-        # Create the embed
+        # Process only unnotified activities from this turn
+        current_turn_activities = []
+        for activity in activities:
+            if not activity.get('notified', False):
+                activity_type = activity.get('type', '')
+                message = activity.get('message', '')
+                
+                # Add each activity message (already properly formatted)
+                if message:
+                    current_turn_activities.append(message)
+                    # Mark as notified to prevent re-showing
+                    activity['notified'] = True
+        
+        # If no new activities, don't send empty embed
+        if not current_turn_activities:
+            return
+        
+        # Combine only current turn activities
+        description = "\n".join(current_turn_activities)
+        
+        # Add appropriate footer
+        if has_battle_end:
+            description += "\n\nThe battle has ended."
+        elif not has_flee:
+            description += "\n\nThe next round will begin in 5 seconds."
+        
+        # Create embed with consistent formatting
         embed = discord.Embed(
-            title=f"Battle between {challenger_name} and {target_name}",
-            description="\n\n".join(activity_messages) + "\n\nNext round will begin in 5 seconds.",
-            color=0xFFD700  # Gold color
+            title=f"**Battle between {challenger_name} and {target_name}.**",
+            description=description,
+            color=0xFFD700
         )
         
-        # Send to channel
+        # Send to channel ONLY ONCE
         await self.channel.send(embed=embed)
         
-        # Clear activities after sending (unless specified not to)
-        if clear_activities:
-            battle_data['battle_activities'] = []
+        # Don't regenerate interfaces here - this was causing duplicate execution
+        # Interfaces are regenerated by the calling function after battle logic completes
+
+    async def regenerate_battle_interfaces(self, battle_data, challenger_id, target_id, challenger_name, target_name):
+        """Regenerate battle interfaces after any battle activity"""
+        try:
+            print(f"[DEBUG] Regenerating battle interfaces after activity")
+            
+            challenger_pokemon = battle_data.get('challenger_pokemon')
+            target_pokemon = battle_data.get('target_pokemon')
+            challenger_party = battle_data.get('challenger_party', [])
+            target_party = battle_data.get('target_party', [])
+            
+            # Use active index when available, fallback to first Pokemon in party if challenger_pokemon/target_pokemon not set
+            if not challenger_pokemon and challenger_party:
+                challenger_active_idx = battle_data.get('challenger_active_index', 0)
+                if challenger_active_idx < len(challenger_party):
+                    challenger_pokemon = challenger_party[challenger_active_idx]
+                else:
+                    challenger_pokemon = challenger_party[0]  # Fallback to first if index out of bounds
+                battle_data['challenger_pokemon'] = challenger_pokemon
+                
+            if not target_pokemon and target_party:
+                target_active_idx = battle_data.get('target_active_index', 0)
+                if target_active_idx < len(target_party):
+                    target_pokemon = target_party[target_active_idx]
+                else:
+                    target_pokemon = target_party[0]  # Fallback to first if index out of bounds
+                battle_data['target_pokemon'] = target_pokemon
+                
+            if not challenger_pokemon or not target_pokemon:
+                print(f"[DEBUG] Missing active Pokemon data - challenger: {bool(challenger_pokemon)}, target: {bool(target_pokemon)}")
+                return
+            
+            dm_messages = battle_data.get('dm_messages', {})
+            if dm_messages:
+                challenger_party = battle_data.get('challenger_party', [])
+                target_party = battle_data.get('target_party', [])
+                
+                # Create FRESH interfaces with NEW views
+                challenger_embed = create_battle_interface_embed(challenger_pokemon, challenger_party, target_name)
+                target_embed = create_battle_interface_embed(target_pokemon, target_party, challenger_name)
+                
+                # Create NEW views (important for component refresh)
+                challenger_view = BattleInterfaceView(challenger_id, self.battle_id, challenger_pokemon, challenger_party, self.channel)
+                target_view = BattleInterfaceView(target_id, self.battle_id, target_pokemon, target_party, self.channel)
+                
+                # Ensure components are enabled for the regenerated interfaces
+                challenger_view.enable_all_components()
+                target_view.enable_all_components()
+                
+                # Update both players' DM interfaces
+                for user_id_str, message_id in dm_messages.items():
+                    try:
+                        user_id = int(user_id_str)
+                        user = bot.get_user(user_id) or await bot.fetch_user(user_id)
+                        
+                        if user:
+                            dm_channel = user.dm_channel or await user.create_dm()
+                            
+                            try:
+                                message = await dm_channel.fetch_message(message_id)
+                                if user_id == challenger_id:
+                                    await message.edit(embed=challenger_embed, view=challenger_view)
+                                    print(f"[DEBUG] Updated challenger DM interface with fresh embed and view")
+                                else:
+                                    await message.edit(embed=target_embed, view=target_view)
+                                    print(f"[DEBUG] Updated target DM interface with fresh embed and view")
+                                print(f"[DEBUG] Successfully regenerated DM interface for user {user_id_str}")
+                            except discord.NotFound:
+                                # Send new message if old one was deleted
+                                if user_id == challenger_id:
+                                    new_msg = await user.send(embed=challenger_embed, view=challenger_view)
+                                else:
+                                    new_msg = await user.send(embed=target_embed, view=target_view)
+                                battle_data['dm_messages'][user_id_str] = new_msg.id
+                                
+                    except Exception as e:
+                        print(f"[DEBUG] Error regenerating DM interface for user {user_id_str}: {e}")
+            
+            # Update battle overview in channel
+            await self.send_updated_battle_overview(battle_data, challenger_name, target_name)
+            
+        except Exception as e:
+            print(f"[DEBUG] Error regenerating battle interfaces: {e}")
+
+    async def send_updated_battle_overview(self, battle_data, challenger_name, target_name):
+        """Send updated battle overview to channel"""
+        try:
+            challenger_id = battle_data.get('challenger_id')
+            target_id = battle_data.get('target_id')
+            challenger_pokemon = battle_data.get('challenger_pokemon')
+            target_pokemon = battle_data.get('target_pokemon')
+            challenger_party = battle_data.get('challenger_party', [])
+            target_party = battle_data.get('target_party', [])
+            
+            # Create battle overview embed showing both players' teams
+            overview_embed = discord.Embed(
+                title=f"**Battle between {challenger_name} and {target_name}**",
+                description="Choose your moves using the interface below. After both players have chosen, the move will be executed.",
+                color=0xFFD700
+            )
+            
+            # Add challenger's team
+            challenger_team_text = ""
+            for i, pokemon in enumerate(challenger_party, 1):
+                max_hp = pokemon.get('calculated_stats', {}).get('hp', 0)
+                if max_hp == 0 and 'base_stats' in pokemon and 'ivs' in pokemon:
+                    from stats_iv_calculation import calculate_official_stats
+                    calculated_stats = calculate_official_stats(
+                        pokemon['base_stats'],
+                        pokemon['ivs'],
+                        pokemon.get('level', 1),
+                        pokemon.get('nature', 'hardy'),
+                        pokemon.get('evs', {"hp": 0, "attack": 0, "defense": 0, "sp_attack": 0, "sp_defense": 0, "speed": 0})
+                    )
+                    max_hp = calculated_stats['hp']
+                current_hp = pokemon.get('current_hp', max_hp)
+                
+                iv_total = sum([pokemon.get('ivs', {}).get(stat, 0) for stat in ['hp', 'attack', 'defense', 'sp_attack', 'sp_defense', 'speed']])
+                iv_percentage = round((iv_total / 186) * 100, 2)
+                gender_symbol = convert_text_gender_to_emoji(pokemon.get('gender', 'unknown'))
+                challenger_team_text += f"L{pokemon.get('level', 1)} {iv_percentage}% {pokemon.get('name', 'Unknown').title()}{gender_symbol} (#{i}) • {current_hp}/{max_hp} HP\n"
+            
+            overview_embed.add_field(
+                name=challenger_name, 
+                value=challenger_team_text.strip() or "No Pokemon", 
+                inline=False
+            )
+            
+            # Add target's team
+            target_team_text = ""
+            for i, pokemon in enumerate(target_party, 1):
+                max_hp = pokemon.get('calculated_stats', {}).get('hp', 0)
+                if max_hp == 0 and 'base_stats' in pokemon and 'ivs' in pokemon:
+                    from stats_iv_calculation import calculate_official_stats
+                    calculated_stats = calculate_official_stats(
+                        pokemon['base_stats'],
+                        pokemon['ivs'],
+                        pokemon.get('level', 1),
+                        pokemon.get('nature', 'hardy'),
+                        pokemon.get('evs', {"hp": 0, "attack": 0, "defense": 0, "sp_attack": 0, "sp_defense": 0, "speed": 0})
+                    )
+                    max_hp = calculated_stats['hp']
+                current_hp = pokemon.get('current_hp', max_hp)
+                
+                iv_total = sum([pokemon.get('ivs', {}).get(stat, 0) for stat in ['hp', 'attack', 'defense', 'sp_attack', 'sp_defense', 'speed']])
+                iv_percentage = round((iv_total / 186) * 100, 2)
+                gender_symbol = convert_text_gender_to_emoji(pokemon.get('gender', 'unknown'))
+                target_team_text += f"L{pokemon.get('level', 1)} {iv_percentage}% {pokemon.get('name', 'Unknown').title()}{gender_symbol} (#{i}) • {current_hp}/{max_hp} HP\n"
+            
+            overview_embed.add_field(
+                name=target_name, 
+                value=target_team_text.strip() or "No Pokemon", 
+                inline=False
+            )
+            
+            # Create battlefield image for the overview
+            challenger_image_buffer = create_animated_battle_field(
+                challenger_pokemon.get('name', 'Unknown'), 
+                target_pokemon.get('name', 'Unknown'), 
+                challenger_id, 
+                battle_data
+            )
+            
+            if challenger_image_buffer:
+                import time
+                timestamp = int(time.time())
+                
+                challenger_image_buffer.seek(0)
+                header = challenger_image_buffer.read(4)
+                challenger_image_buffer.seek(0)
+                
+                if header.startswith(b'GIF8'):
+                    extension = "gif"
+                else:
+                    extension = "png"
+                
+                filename = f"battle_overview_{timestamp}.{extension}"
+                file = discord.File(challenger_image_buffer, filename=filename)
+                overview_embed.set_image(url=f"attachment://{filename}")
+                
+                # Send the overview to channel
+                await self.channel.send(embed=overview_embed, file=file)
+                print(f'[DEBUG] Sent updated battle overview to channel')
+            
+        except Exception as e:
+            print(f'[DEBUG] Error sending updated battle overview: {e}')
 
     async def edit_battle_interfaces_after_switch(self, battle_data, challenger_id, target_id, challenger_name, target_name):
         """Edit existing battle interface messages after a Pokemon switch"""
@@ -4538,7 +4873,7 @@ class BattleInterfaceView(View):
             try:
                 # Create battle overview embed showing both players' teams
                 overview_embed = discord.Embed(
-                    title=f"Battle between {challenger_name} and {target_name}",
+                    title=f"**Battle between {challenger_name} and {target_name}**",
                     description="Choose your moves using the interface below. After both players have chosen, the move will be executed.",
                     color=0xFFD700
                 )
@@ -4687,11 +5022,15 @@ class BattleInterfaceView(View):
             switching_pokemon_name = battle_data.get('switch_pokemon_name', 'Unknown')
             
             # Create the battle description for timeout scenario (only first player switched)
-            battle_title = f"Battle between {switching_player} and {opponent_name}"
+            battle_title = f"**Battle between {switching_player} and {opponent_name}**"
             description = f"{battle_title}\n\n"
             description += f"**{switching_player} switched pokémon!**\n"
             description += f"{switching_pokemon_name} is now on the field!\n\n"
-            description += "Next round will begin in 5 seconds."
+            # Check if battle is over before showing next round message
+            if is_battle_over(battle_data):
+                description += "The battle has ended."
+            else:
+                description += "Next round will begin in 5 seconds."
             
             embed = discord.Embed(
                 description=description,
@@ -4720,7 +5059,7 @@ class BattleInterfaceView(View):
             opponent_pokemon_name = battle_data.get('opponent_switch_pokemon_name', 'Unknown')
             
             # Create the battle description
-            battle_title = f"Battle between {switching_player} and {opponent_name}"
+            battle_title = f"**Battle between {switching_player} and {opponent_name}**"
             
             if response == 'switch':
                 # Both players switched - create formatted message
@@ -4729,7 +5068,11 @@ class BattleInterfaceView(View):
                 description += f"{switching_pokemon_name} is now on the field!\n"
                 description += f"**{opponent_name} switched pokémon!**\n"
                 description += f"{opponent_pokemon_name} is now on the field!\n\n"
-                description += "Next round will begin in 5 seconds."
+                # Check if battle is over before showing next round message
+                if is_battle_over(battle_data):
+                    description += "The battle has ended."
+                else:
+                    description += "Next round will begin in 5 seconds."
                 
                 embed = discord.Embed(
                     description=description,
@@ -4761,7 +5104,11 @@ class BattleInterfaceView(View):
                 description += f"{switching_pokemon_name} is now on the field!\n"
                 description += f"**{opponent_pokemon_name} used {move_name}!**\n"
                 description += f"{move_name} dealt {damage} damage!\n\n"
-                description += "Next round will begin in 5 seconds."
+                # Check if battle is over before showing next round message
+                if is_battle_over(battle_data):
+                    description += "The battle has ended."
+                else:
+                    description += "Next round will begin in 5 seconds."
                 
                 embed = discord.Embed(
                     description=description,
@@ -4783,7 +5130,11 @@ class BattleInterfaceView(View):
                 description += f"**{switching_player} switched pokémon!**\n"
                 description += f"{switching_pokemon_name} is now on the field!\n"
                 description += f"**{passing_player} passed their turn!**\n\n"
-                description += "Next round will begin in 5 seconds."
+                # Check if battle is over before showing next round message
+                if is_battle_over(battle_data):
+                    description += "The battle has ended."
+                else:
+                    description += "Next round will begin in 5 seconds."
                 
                 embed = discord.Embed(
                     description=description,
@@ -4793,8 +5144,10 @@ class BattleInterfaceView(View):
             # Complete the switch with response
             await self.complete_switch(battle_data, switching_player, response)
             
-            # Send resolution message
-            await self.channel.send(embed=embed)
+            # Use centralized activity system instead of direct embed sending
+            challenger_name = battle_data.get('challenger_name', 'Player 1')
+            target_name = battle_data.get('target_name', 'Player 2')
+            await self.send_battle_activity_embed(battle_data, challenger_name, target_name)
             
             # Wait 5 seconds before continuing for all switch scenarios
             if response in ['switch', 'pass', 'move']:
@@ -4818,11 +5171,13 @@ class BattleInterfaceView(View):
             if 'battle_activities' not in battle_data:
                 battle_data['battle_activities'] = []
             
+            # Format: User switched Pokémon! <Pokémon> is now on the field!
+            clean_switch_message = f"{switching_player} switched Pokémon!\n{pokemon_name} is now on the field!"
             battle_data['battle_activities'].append({
                 'type': 'switch',
                 'player_name': switching_player,
                 'pokemon_name': pokemon_name,
-                'message': f"**{switching_player} switched to {pokemon_name}!**"
+                'message': clean_switch_message
             })
             
             # Reset battle phase
@@ -4845,80 +5200,107 @@ class BattleInterfaceView(View):
             await interaction.response.send_message("This is not your battle!", ephemeral=True)
             return
         
-        if select.values[0] == "none":
-            await interaction.response.send_message("❌ This Pokemon hasn't learned any moves yet!", ephemeral=True)
-            return
-            
-        move_name = select.values[0]
-        
-        # Get battle data
-        battle_data = active_battles.get(self.battle_id, {})
-        if not battle_data:
-            await interaction.response.send_message("❌ Battle data not found!", ephemeral=True)
+        # Check if an interaction is already being processed to prevent duplicate embeds
+        if self._is_processing_interaction():
+            await interaction.response.send_message("⏳ Please wait, your previous action is still being processed!", ephemeral=True)
             return
         
-        # Check if we're in switch waiting phase
-        if battle_data.get('battle_phase') == 'switch_waiting':
-            # Check if this user is the opponent who should respond
-            switch_initiator = battle_data.get('switch_initiator')
-            if self.user_id != switch_initiator:
-                # This is the opponent responding with a move
-                battle_data['opponent_response'] = 'move'
-                battle_data['opponent_move'] = move_name.replace('-', ' ').title()
-                await interaction.response.send_message(f"✅ You used {move_name.replace('-', ' ').title()} in response to opponent's switch!", ephemeral=True)
-                return
-            else:
-                await interaction.response.send_message("❌ You are currently switching! Wait for opponent response.", ephemeral=True)
-                return
+        # Set processing state to prevent concurrent interactions
+        self._set_processing_interaction(True)
         
-        # Normal move selection logic
-        # Initialize pending moves if not exists
-        if 'pending_moves' not in battle_data:
-            battle_data['pending_moves'] = {}
-        
-        # Store the selected move for this user
-        battle_data['pending_moves'][self.user_id] = move_name
-        
-        challenger_id = battle_data.get('challenger_id')
-        target_id = battle_data.get('target_id')
-        challenger_name = battle_data.get('challenger_name', 'Player 1')
-        target_name = battle_data.get('target_name', 'Player 2')
-        
-        # Check if both players have selected moves
-        if challenger_id in battle_data['pending_moves'] and target_id in battle_data['pending_moves']:
-            # Both players have selected moves - execute simultaneously
-            await self.execute_simultaneous_moves(battle_data, challenger_name, target_name)
-            await interaction.response.send_message(f"✅ You used {move_name.replace('-', ' ').title()}! Both moves executed!", ephemeral=True)
-        else:
-            # Only one player has selected - set up timer for other player
-            await interaction.response.send_message(f"✅ You selected {move_name.replace('-', ' ').title()}! Waiting for opponent...", ephemeral=True)
+        try:
+            # Defer the interaction immediately to prevent timeout
+            await interaction.response.defer(ephemeral=True)
             
-            # Disable UI for the player who just selected
-            self.disable_all_components()
-            
-            # Set up timer task for timeout
-            battle_data['timer_start'] = time.time()
-            
-            # Start background timer task if not already running
-            if 'timer_task' not in battle_data or battle_data['timer_task'].done():
-                battle_data['timer_task'] = asyncio.create_task(
-                    self.handle_move_timeout(battle_data, challenger_name, target_name, challenger_id, target_id)
-                )
+            # Use asyncio.Lock to prevent concurrent interactions
+            async with self._interaction_lock:
+                # Disable all components during processing
+                self.disable_all_components()
+                
+                if select.values[0] == "none":
+                    await interaction.followup.send("❌ This Pokemon hasn't learned any moves yet!", ephemeral=True)
+                    return
+                
+                move_name = select.values[0]
+                
+                # Get battle data
+                battle_data = active_battles.get(self.battle_id, {})
+                if not battle_data:
+                    await interaction.followup.send("❌ Battle data not found!", ephemeral=True)
+                    return
+                
+                # Check if we're in switch waiting phase
+                if battle_data.get('battle_phase') == 'switch_waiting':
+                    # Check if this user is the opponent who should respond
+                    switch_initiator = battle_data.get('switch_initiator')
+                    if self.user_id != switch_initiator:
+                        # This is the opponent responding with a move
+                        battle_data['opponent_response'] = 'move'
+                        battle_data['opponent_move'] = move_name.replace('-', ' ').title()
+                        await interaction.followup.send(f"✅ You used {move_name.replace('-', ' ').title()} in response to opponent's switch!", ephemeral=True)
+                        return
+                    else:
+                        await interaction.followup.send("❌ You are currently switching! Wait for opponent response.", ephemeral=True)
+                        return
+                
+                # Normal move selection logic
+                # Initialize pending moves if not exists
+                if 'pending_moves' not in battle_data:
+                    battle_data['pending_moves'] = {}
+                
+                # Store the selected move for this user
+                battle_data['pending_moves'][self.user_id] = move_name
+                
+                challenger_id = battle_data.get('challenger_id')
+                target_id = battle_data.get('target_id')
+                challenger_name = battle_data.get('challenger_name', 'Player 1')
+                target_name = battle_data.get('target_name', 'Player 2')
+                
+                # Check if both players have selected moves
+                if challenger_id in battle_data['pending_moves'] and target_id in battle_data['pending_moves']:
+                    # Both players have selected moves - execute simultaneously
+                    await self.execute_simultaneous_moves(battle_data, challenger_name, target_name)
+                    await interaction.followup.send(f"✅ You used {move_name.replace('-', ' ').title()}! Both moves executed!", ephemeral=True)
+                else:
+                    # Only one player has selected - set up timer for other player
+                    await interaction.followup.send(f"✅ You selected {move_name.replace('-', ' ').title()}! Waiting for opponent...", ephemeral=True)
+                    
+                    # Set up timer task for timeout
+                    battle_data['timer_start'] = time.time()
+                    
+                    # Start background timer task if not already running
+                    if 'timer_task' not in battle_data or battle_data['timer_task'].done():
+                        battle_data['timer_task'] = asyncio.create_task(
+                            self.handle_move_timeout(battle_data, challenger_name, target_name, challenger_id, target_id)
+                        )
+        
+        finally:
+            # Always clear the processing state to allow new interactions
+            self._set_processing_interaction(False)
 
     def disable_all_components(self):
-        """Disable all UI components but keep them visible"""
-        self.move_select.disabled = True
+        """Disable all UI components but keep them visible (except move select which stays enabled)"""
+        self.move_select.disabled = False  # Always keep move select enabled
         self.pokemon_switch.disabled = True
         for child in self.children:
-            if hasattr(child, 'disabled'):
+            if hasattr(child, 'disabled') and child != self.move_select:
                 child.disabled = True
 
     def enable_all_components(self):
         """Re-enable all UI components"""
+        # Only enable if Pokemon has moves or battle allows switching
+        current_moves = self.user_pokemon.get("current_moves", [])
+        
+        # Always enable move select (even if Pokemon has no moves, show blank options)
         self.move_select.disabled = False
-        self.pokemon_switch.disabled = False
+        
+        # Enable Pokemon switch if there are available Pokemon (including 1v1 battles)
+        available_pokemon = [p for p in self.user_party if p.get("current_hp", 0) > 0]
+        self.pokemon_switch.disabled = len(available_pokemon) == 0
+        
+        # Always enable pass and flee
         for child in self.children:
-            if hasattr(child, 'disabled'):
+            if hasattr(child, 'label') and child.label in ['Pass', 'Flee']:
                 child.disabled = False
 
     async def handle_move_timeout(self, battle_data, challenger_name, target_name, challenger_id, target_id):
@@ -4933,7 +5315,7 @@ class BattleInterfaceView(View):
             if challenger_id in battle_data['pending_moves'] and target_id in battle_data['pending_moves']:
                 # Both players selected - execute moves
                 await self.execute_simultaneous_moves(battle_data, challenger_name, target_name)
-                self.enable_all_components()
+                # Components will be re-enabled via regenerate_battle_interfaces
                 return
             
             # Check if 20 seconds have passed
@@ -4948,11 +5330,53 @@ class BattleInterfaceView(View):
                 
                 # Now execute both moves (one real, one pass) using the unified system
                 await self.execute_simultaneous_moves(battle_data, challenger_name, target_name)
-                self.enable_all_components()
+                # Components will be re-enabled via regenerate_battle_interfaces
                 return
 
+    def get_pokemon_speed(self, pokemon):
+        """Calculate the effective speed stat of a Pokemon"""
+        try:
+            
+            # First try to get speed from pre-calculated stats
+            calculated_stats = pokemon.get('calculated_stats', {})
+            if 'speed' in calculated_stats:
+                return calculated_stats['speed']
+            
+            # If calculated_stats not available, compute from Pokemon's data
+            base_stats = pokemon.get('base_stats', {})
+            if not base_stats:
+                print(f"Warning: No base_stats found for {pokemon.get('name', 'Unknown')}")
+                return 50  # Default speed if no base stats
+            ivs = pokemon.get('ivs', {})
+            level = pokemon.get('level', 50)
+            nature = pokemon.get('nature', 'hardy')
+            evs = pokemon.get('evs', {})
+            
+            # Calculate official stats using the Pokemon's own data
+            calculated_stats = calculate_official_stats(base_stats, ivs, level, nature, evs)
+            return calculated_stats.get('speed', 50)
+        except Exception as e:
+            print(f"Error calculating speed for {pokemon.get('name', 'Unknown')}: {e}")
+            return 50  # Default speed on error
+    
+    def determine_move_order(self, challenger_pokemon, target_pokemon, challenger_move, target_move):
+        """Determine move order based on speed with challenger advantage for ties"""
+        # Calculate effective speeds
+        challenger_speed = self.get_pokemon_speed(challenger_pokemon)
+        target_speed = self.get_pokemon_speed(target_pokemon)
+        
+        # Add challenger advantage (+1 speed) for speed ties
+        if challenger_speed == target_speed:
+            challenger_speed += 1  # Challenger gets +1 speed priority
+        
+        # Determine who goes first
+        if challenger_speed > target_speed:
+            return 'challenger_first'
+        else:
+            return 'target_first'
+    
     async def execute_simultaneous_moves(self, battle_data, challenger_name, target_name):
-        """Execute both players' moves simultaneously and combine with any existing activities"""
+        """Execute both players' moves based on speed order with challenger advantage for ties"""
         challenger_id = battle_data.get('challenger_id')
         target_id = battle_data.get('target_id')
         challenger_move = battle_data['pending_moves'][challenger_id]
@@ -4969,56 +5393,33 @@ class BattleInterfaceView(View):
             if 'battle_activities' not in battle_data:
                 battle_data['battle_activities'] = []
             
-            # Record move/pass activities
-            if challenger_move == "pass":
-                battle_data['battle_activities'].append({
-                    'type': 'pass',
-                    'player_name': challenger_name,
-                    'message': f"**{challenger_name} did nothing.**"
-                })
-            else:
-                # Execute challenger's move and record activity
-                challenger_messages = await execute_battle_move(
-                    challenger_pokemon, target_pokemon, challenger_move, self.channel,
-                    challenger_pokemon.get('name', 'Unknown'), target_pokemon.get('name', 'Unknown')
-                )
-                # Convert move messages to battle activity format
-                move_display_name = challenger_move.replace('-', ' ').title()
-                battle_data['battle_activities'].append({
-                    'type': 'move',
-                    'player_name': challenger_name,
-                    'pokemon_name': challenger_pokemon.get('name', 'Unknown'),
-                    'move_name': move_display_name,
-                    'message': "\n".join(challenger_messages[:-2])  # Remove blank line and "next round"
-                })
+            # CLEAR OLD ACTIVITIES AT START OF NEW TURN
+            battle_data['battle_activities'] = []
             
-            if target_move == "pass":
-                battle_data['battle_activities'].append({
-                    'type': 'pass',
-                    'player_name': target_name,
-                    'message': f"**{target_name} did nothing.**"
-                })
+            # Determine move order based on speed with challenger advantage
+            move_order = self.determine_move_order(challenger_pokemon, target_pokemon, challenger_move, target_move)
+            
+            # Execute moves in speed order
+            if move_order == 'challenger_first':
+                # Challenger goes first
+                await self.execute_player_move(battle_data, challenger_id, challenger_name, challenger_move, 
+                                              challenger_pokemon, target_pokemon, 'challenger')
+                # Only execute target move if target Pokemon is still alive
+                if target_pokemon.get('current_hp', 0) > 0:
+                    await self.execute_player_move(battle_data, target_id, target_name, target_move, 
+                                                  target_pokemon, challenger_pokemon, 'target')
             else:
-                # Execute target's move and record activity
-                target_messages = await execute_battle_move(
-                    target_pokemon, challenger_pokemon, target_move, self.channel,
-                    target_pokemon.get('name', 'Unknown'), challenger_pokemon.get('name', 'Unknown')
-                )
-                # Convert move messages to battle activity format
-                move_display_name = target_move.replace('-', ' ').title()
-                battle_data['battle_activities'].append({
-                    'type': 'move',
-                    'player_name': target_name,
-                    'pokemon_name': target_pokemon.get('name', 'Unknown'),
-                    'move_name': move_display_name,
-                    'message': "\n".join(target_messages[:-2])  # Remove blank line and "next round"
-                })
+                # Target goes first
+                await self.execute_player_move(battle_data, target_id, target_name, target_move, 
+                                              target_pokemon, challenger_pokemon, 'target')
+                # Only execute challenger move if challenger Pokemon is still alive
+                if challenger_pokemon.get('current_hp', 0) > 0:
+                    await self.execute_player_move(battle_data, challenger_id, challenger_name, challenger_move, 
+                                                  challenger_pokemon, target_pokemon, 'challenger')
             
             # Check if battle should end due to all Pokemon being fainted
             challenger_party = battle_data.get('challenger_party', [])
             target_party = battle_data.get('target_party', [])
-            challenger_id = battle_data.get('challenger_id')
-            target_id = battle_data.get('target_id')
             
             end_messages, battle_ended = check_battle_end_conditions(
                 self.battle_id, challenger_party, target_party, 
@@ -5033,21 +5434,103 @@ class BattleInterfaceView(View):
                         'message': msg
                     })
             
-            # Send combined battle activity embed (includes switches + moves/passes)
+            # Send combined battle activity embed ONLY ONCE
             await self.send_battle_activity_embed(battle_data, challenger_name, target_name, clear_activities=True)
             
             if not battle_ended:
                 # Clear pending moves for next round only if battle continues
                 battle_data['pending_moves'] = {}
+                
+                # Prevent duplicate regeneration calls
+                if battle_data.get('regenerating_ui', False):
+                    print(f"[DEBUG] UI regeneration already in progress, skipping duplicate call")
+                    return
+                
+                battle_data['regenerating_ui'] = True
+                try:
+                    # Wait 5 seconds before regenerating interfaces
+                    print(f"[DEBUG] Waiting 5 seconds before regenerating interfaces...")
+                    await asyncio.sleep(5)
+                    
+                    # Regenerate battle interfaces after delay
+                    print(f"[DEBUG] About to call regenerate_battle_interfaces...")
+                    await self.regenerate_battle_interfaces(battle_data, challenger_id, target_id, challenger_name, target_name)
+                    print(f"[DEBUG] Completed regenerate_battle_interfaces call")
+                finally:
+                    # Always clear the flag even if an error occurs
+                    battle_data['regenerating_ui'] = False
+    
+    async def execute_player_move(self, battle_data, player_id, player_name, move, attacker_pokemon, defender_pokemon, player_type):
+        """Execute a single player's move and record activity - PREVENT DUPLICATE EXECUTION"""
+        # Check if this exact move has already been executed this turn
+        turn_key = f"{player_id}_{move}_{attacker_pokemon.get('name')}_{defender_pokemon.get('name')}"
+        
+        if 'executed_moves_this_turn' not in battle_data:
+            battle_data['executed_moves_this_turn'] = set()
+        
+        if turn_key in battle_data['executed_moves_this_turn']:
+            print(f"[DEBUG] Move {move} by {player_name} already executed this turn, skipping duplicate")
+            return
+        
+        # Mark this move as executed
+        battle_data['executed_moves_this_turn'].add(turn_key)
+        
+        if move == "pass":
+            battle_data['battle_activities'].append({
+                'type': 'pass',
+                'player_name': player_name,
+                'message': f"{player_name} passed their turn!"
+            })
+        else:
+            # Store defender's HP before move execution
+            defender_hp_before = defender_pokemon.get('current_hp', 
+                defender_pokemon.get('calculated_stats', {}).get('hp', 100))
+            
+            # Execute player's move and get results
+            move_messages = await execute_battle_move(
+                attacker_pokemon, defender_pokemon, move, self.channel,
+                attacker_pokemon.get('name', 'Unknown'), defender_pokemon.get('name', 'Unknown')
+            )
+            
+            # Store defender's HP after move execution
+            defender_hp_after = defender_pokemon.get('current_hp', defender_hp_before)
+            actual_damage = max(0, defender_hp_before - defender_hp_after)
+            
+            # Create clean move activity message using ACTUAL damage dealt
+            pokemon_name = attacker_pokemon.get('name', 'Unknown').title()
+            move_display_name = move.replace('-', ' ').title()
+            
+            if actual_damage > 0:
+                clean_message = f"{pokemon_name} used {move_display_name}!\n{move_display_name} dealt {actual_damage} damage!"
             else:
-                # Battle ended - disable UI components
-                self.disable_all_components()
+                clean_message = f"{pokemon_name} used {move_display_name}!"
+            
+            # Add faint message if Pokemon fainted
+            if defender_hp_after <= 0 and defender_hp_before > 0:
+                clean_message += f"\n{defender_pokemon.get('name', 'Unknown').title()} has fainted!"
+            
+            battle_data['battle_activities'].append({
+                'type': 'move',
+                'player_name': player_name,
+                'pokemon_name': pokemon_name,
+                'move_name': move_display_name,
+                'damage': actual_damage,
+                'message': clean_message
+            })
 
     @discord.ui.select(placeholder="Switch Pokémon", min_values=1, max_values=1, row=1)
     async def pokemon_switch(self, interaction: discord.Interaction, select):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("This is not your battle!", ephemeral=True)
             return
+        
+        # Check if already processing an interaction to prevent race conditions
+        if self._is_processing_interaction():
+            await interaction.response.send_message("⏳ Please wait, your previous action is still being processed!", ephemeral=True)
+            return
+        
+        # Set processing state to lock further interactions
+        self._set_processing_interaction(True)
         
         # Immediately defer the interaction to prevent timeout
         await interaction.response.defer(ephemeral=True)
@@ -5139,17 +5622,21 @@ class BattleInterfaceView(View):
             if 'battle_activities' not in battle_data:
                 battle_data['battle_activities'] = []
             
-            # Check if opponent already has a pending move - if so, execute together
+            # CRITICAL FIX: Check if opponent already has a pending move
             if 'pending_moves' in battle_data and opponent_id in battle_data['pending_moves']:
                 # Opponent already selected a move - execute both actions together
                 opponent_move = battle_data['pending_moves'][opponent_id]
                 
+                # Clear old activities for this turn
+                battle_data['battle_activities'] = []
+                
                 # Record switch activity
+                clean_switch_message = f"{switching_player} switched Pokémon!\n{new_pokemon_wrapper['name'].title()} is now on the field!"
                 battle_data['battle_activities'].append({
                     'type': 'switch',
                     'player_name': switching_player,
                     'pokemon_name': new_pokemon_wrapper['name'].title(),
-                    'message': f"**{switching_player}** switched to {new_pokemon_wrapper['name'].title()}!"
+                    'message': clean_switch_message
                 })
                 
                 # Execute opponent's move if it's not "pass"
@@ -5157,24 +5644,47 @@ class BattleInterfaceView(View):
                     # Get opponent's Pokemon
                     opponent_pokemon = battle_data.get('challenger_pokemon') if opponent_id == challenger_id else battle_data.get('target_pokemon')
                     if opponent_pokemon:
-                        opponent_messages = await execute_battle_move(
+                        # Store defender's HP before move execution
+                        defender_hp_before = new_pokemon_wrapper.get('current_hp', 
+                            new_pokemon_wrapper.get('calculated_stats', {}).get('hp', 100))
+                        
+                        # Execute move
+                        move_messages = await execute_battle_move(
                             opponent_pokemon, new_pokemon_wrapper, opponent_move, self.channel,
                             opponent_pokemon.get('name', 'Unknown'), new_pokemon_wrapper.get('name', 'Unknown')
                         )
+                        
+                        # Calculate actual damage dealt
+                        defender_hp_after = new_pokemon_wrapper.get('current_hp', defender_hp_before)
+                        actual_damage = max(0, defender_hp_before - defender_hp_after)
+                        
+                        # Create clean move message
                         move_display_name = opponent_move.replace('-', ' ').title()
+                        opponent_pokemon_name = opponent_pokemon.get('name', 'Unknown').title()
+                        
+                        if actual_damage > 0:
+                            clean_message = f"{opponent_pokemon_name} used {move_display_name}!\n{move_display_name} dealt {actual_damage} damage!"
+                        else:
+                            clean_message = f"{opponent_pokemon_name} used {move_display_name}!"
+                        
+                        # Add faint message if Pokemon fainted
+                        if defender_hp_after <= 0 and defender_hp_before > 0:
+                            clean_message += f"\n{new_pokemon_wrapper.get('name', 'Unknown').title()} has fainted!"
+                        
                         battle_data['battle_activities'].append({
                             'type': 'move',
                             'player_name': opponent_name,
-                            'pokemon_name': opponent_pokemon.get('name', 'Unknown'),
+                            'pokemon_name': opponent_pokemon_name,
                             'move_name': move_display_name,
-                            'message': "\n".join(opponent_messages[:-2])  # Remove blank line and "next round"
+                            'damage': actual_damage,
+                            'message': clean_message
                         })
                 else:
                     # Opponent passed
                     battle_data['battle_activities'].append({
                         'type': 'pass',
                         'player_name': opponent_name,
-                        'message': f"**{opponent_name}** did nothing!"
+                        'message': f"{opponent_name} passed their turn!"
                     })
                 
                 # Check if battle should end due to all Pokemon being fainted
@@ -5199,17 +5709,13 @@ class BattleInterfaceView(View):
                 # Send combined battle activity embed
                 await self.send_battle_activity_embed(battle_data, challenger_name, target_name, clear_activities=True)
                 
-                if battle_ended:
-                    # Battle ended - disable UI components and return early
-                    self.disable_all_components()
-                    await interaction.followup.send(f"✅ Battle ended!", ephemeral=True)
-                    return
-                
-                # Clear pending moves for next round only if battle continues
-                battle_data['pending_moves'] = {}
-                
-                # Reset battle phase
-                battle_data['battle_phase'] = 'normal'
+                if not battle_ended:
+                    # Clear pending moves for next round
+                    battle_data['pending_moves'] = {}
+                    
+                    # CRITICAL FIX: Wait 5 seconds then regenerate interfaces
+                    await asyncio.sleep(5)
+                    await self.regenerate_battle_interfaces(battle_data, challenger_id, target_id, challenger_name, target_name)
                 
                 await interaction.followup.send(f"✅ Switched to {new_pokemon_wrapper['name'].title()}! Both actions executed!", ephemeral=True)
                 
@@ -5233,6 +5739,10 @@ class BattleInterfaceView(View):
                 await interaction.followup.send("❌ An error occurred while switching Pokemon.", ephemeral=True)
             except:
                 pass
+        
+        finally:
+            # Always clear the processing state to allow new interactions
+            self._set_processing_interaction(False)
 
     @discord.ui.button(label="Flee", style=discord.ButtonStyle.danger, row=2)
     async def flee_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -5240,34 +5750,47 @@ class BattleInterfaceView(View):
             await interaction.response.send_message("This is not your battle!", ephemeral=True)
             return
         
-        # Get battle data to find the opponent
-        battle_data = active_battles.get(self.battle_id, {})
-        challenger_id = battle_data.get('challenger_id')
-        target_id = battle_data.get('target_id')
-        challenger_name = battle_data.get('challenger_name', 'Player 1')
-        target_name = battle_data.get('target_name', 'Player 2')
+        # Check if an interaction is already being processed to prevent duplicate embeds
+        if self._is_processing_interaction():
+            await interaction.response.send_message("⏳ Please wait, your previous action is still being processed!", ephemeral=True)
+            return
         
-        # Determine who fled and who won
-        if self.user_id == challenger_id:
-            fled_user = challenger_name
-            winner_id = target_id
-            winner_name = target_name
-        else:
-            fled_user = target_name
-            winner_id = challenger_id
-            winner_name = challenger_name
+        # Set processing state to prevent concurrent interactions
+        self._set_processing_interaction(True)
         
-        # Send flee message to channel as normal message
-        flee_message = f"<@{self.user_id}> has fled the battle! <@{winner_id}> has won."
-        await self.channel.send(flee_message)
+        try:
+            # Get battle data to find the opponent
+            battle_data = active_battles.get(self.battle_id, {})
+            challenger_id = battle_data.get('challenger_id')
+            target_id = battle_data.get('target_id')
+            challenger_name = battle_data.get('challenger_name', 'Player 1')
+            target_name = battle_data.get('target_name', 'Player 2')
+            
+            # Determine who fled and who won
+            if self.user_id == challenger_id:
+                fled_user = challenger_name
+                winner_id = target_id
+                winner_name = target_name
+            else:
+                fled_user = target_name
+                winner_id = challenger_id
+                winner_name = challenger_name
+            
+            # Send flee message to channel as normal message
+            flee_message = f"<@{self.user_id}> has fled the battle! <@{winner_id}> has won."
+            await self.channel.send(flee_message)
+            
+            # Properly end the battle using the battle end system (with flee flag)
+            asyncio.create_task(end_battle_with_winner(self.battle_id, winner_id, winner_name, self.channel, is_flee=True))
+            
+            # Disable all components to stop the battle UI
+            self.disable_all_components()
+            
+            await interaction.response.send_message("✅ You fled from the battle!", ephemeral=True)
         
-        # Properly end the battle using the battle end system
-        asyncio.create_task(end_battle_with_winner(self.battle_id, winner_id, winner_name, self.channel))
-        
-        # Disable all components to stop the battle UI
-        self.disable_all_components()
-        
-        await interaction.response.send_message("✅ You fled from the battle!", ephemeral=True)
+        finally:
+            # Always clear the processing state to allow new interactions
+            self._set_processing_interaction(False)
 
     @discord.ui.button(label="Pass", style=discord.ButtonStyle.secondary, row=2)
     async def pass_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -5275,72 +5798,71 @@ class BattleInterfaceView(View):
             await interaction.response.send_message("This is not your battle!", ephemeral=True)
             return
         
-        # Get battle data
-        battle_data = active_battles.get(self.battle_id, {})
-        if not battle_data:
-            await interaction.response.send_message("❌ Battle data not found!", ephemeral=True)
+        # Check if an interaction is already being processed to prevent duplicate embeds
+        if self._is_processing_interaction():
+            await interaction.response.send_message("⏳ Please wait, your previous action is still being processed!", ephemeral=True)
             return
         
-        # Check if we're in a switch waiting phase
-        if battle_data.get('battle_phase') == 'switch_waiting':
-            # Check if this user is the opponent who should respond to the switch
-            switch_initiator = battle_data.get('switch_initiator')
-            if self.user_id != switch_initiator:
-                # This is the opponent responding with a pass
-                battle_data['opponent_response'] = 'pass'
-                
-                challenger_id = battle_data.get('challenger_id')
-                target_id = battle_data.get('target_id')
-                challenger_name = battle_data.get('challenger_name', 'Player 1')
-                target_name = battle_data.get('target_name', 'Player 2')
-                
-                # Get the names for the battle message
-                switching_player = challenger_name if switch_initiator == challenger_id else target_name
-                passing_player = target_name if switch_initiator == challenger_id else challenger_name
-                
-                await interaction.response.send_message(f"✅ You passed your turn! {switching_player} switched and you passed.", ephemeral=True)
+        # Set processing state to prevent concurrent interactions
+        self._set_processing_interaction(True)
+        
+        try:
+            # Get battle data
+            battle_data = active_battles.get(self.battle_id, {})
+            if not battle_data:
+                await interaction.response.send_message("❌ Battle data not found!", ephemeral=True)
                 return
+            
+            # Check if we're in a switch waiting phase
+            if battle_data.get('battle_phase') == 'switch_waiting':
+                # Check if this user is the opponent who should respond to the switch
+                switch_initiator = battle_data.get('switch_initiator')
+                if self.user_id != switch_initiator:
+                    # This is the opponent responding with a pass
+                    battle_data['opponent_response'] = 'pass'
+                    await interaction.response.send_message("✅ You passed your turn! Opponent switched and you passed.", ephemeral=True)
+                    return
+                else:
+                    await interaction.response.send_message("❌ You are currently switching! Wait for opponent response.", ephemeral=True)
+                    return
+            
+            # RESPOND TO INTERACTION IMMEDIATELY to prevent timeout
+            await interaction.response.send_message("✅ You passed your turn!", ephemeral=True)
+            
+            # Now do the processing after the interaction is acknowledged
+            # Initialize pending moves if not exists
+            if 'pending_moves' not in battle_data:
+                battle_data['pending_moves'] = {}
+            
+            # Store the pass action for this user
+            battle_data['pending_moves'][self.user_id] = "pass"
+            
+            challenger_id = battle_data.get('challenger_id')
+            target_id = battle_data.get('target_id')
+            challenger_name = battle_data.get('challenger_name', 'Player 1')
+            target_name = battle_data.get('target_name', 'Player 2')
+            
+            # Check if both players have made their choices
+            if challenger_id in battle_data['pending_moves'] and target_id in battle_data['pending_moves']:
+                # Both players have made choices - execute moves using existing method
+                await self.execute_simultaneous_moves(battle_data, challenger_name, target_name)
+                
+                # Clear pending moves for next round
+                battle_data['pending_moves'] = {}
+                
+                # Clear opponent_response to prevent duplicate handling by background switch timer
+                battle_data.pop('opponent_response', None)
+                
+                # Send followup message for completion
+                await interaction.followup.send("Battle turn executed!", ephemeral=True)
             else:
-                await interaction.response.send_message("❌ You are currently switching! Wait for opponent response.", ephemeral=True)
-                return
+                # Only one player passed - regenerate interfaces and wait
+                await self.regenerate_battle_interfaces(battle_data, challenger_id, target_id, challenger_name, target_name)
+                # Don't send separate embed for individual pass action
         
-        # Normal pass flow when not in switch waiting phase
-        # Initialize pending moves if not exists
-        if 'pending_moves' not in battle_data:
-            battle_data['pending_moves'] = {}
-        
-        # Store the pass action for this user
-        battle_data['pending_moves'][self.user_id] = "pass"
-        
-        challenger_id = battle_data.get('challenger_id')
-        target_id = battle_data.get('target_id')
-        challenger_name = battle_data.get('challenger_name', 'Player 1')
-        target_name = battle_data.get('target_name', 'Player 2')
-        
-        # Initialize battle activities if not exists
-        if 'battle_activities' not in battle_data:
-            battle_data['battle_activities'] = []
-        
-        # Record the pass activity
-        player_name = challenger_name if self.user_id == challenger_id else target_name
-        battle_data['battle_activities'].append({
-            'type': 'pass',
-            'player_name': player_name,
-            'message': f"**{player_name}** did nothing!"
-        })
-        
-        # Check if both players have made their choices
-        if challenger_id in battle_data['pending_moves'] and target_id in battle_data['pending_moves']:
-            # Both players have made choices - send activity embed
-            await self.send_battle_activity_embed(battle_data, challenger_name, target_name)
-            
-            # Clear pending moves for next round
-            battle_data['pending_moves'] = {}
-            
-            await interaction.response.send_message("✅ You passed your turn! Battle result executed!", ephemeral=True)
-        else:
-            # Only one player has made a choice - wait for the other
-            await interaction.response.send_message("✅ You passed your turn! Waiting for opponent...", ephemeral=True)
+        finally:
+            # Always clear the processing state to allow new interactions
+            self._set_processing_interaction(False)
 
 async def send_battle_interface_to_players(battle_id, challenger_id, target_id, challenger_party, target_party, challenger_name, target_name, channel):
     """Send battle interface to both players via DM and store message IDs for editing"""
@@ -5403,12 +5925,20 @@ async def send_battle_interface_to_players(battle_id, challenger_id, target_id, 
         print(f"Error sending battle interfaces: {e}")
 
 class BattlePartyView(View):
-    def __init__(self, challenger_id: int, target_id: int, challenger_name: str, target_name: str):
+    def __init__(self, challenger_id: int, target_id: int, challenger_name: str, target_name: str, battle_format: str = "6v6"):
         super().__init__(timeout=1800)
         self.challenger_id = challenger_id
         self.target_id = target_id
         self.challenger_name = challenger_name
         self.target_name = target_name
+        self.battle_format = battle_format
+        # Extract number of Pokemon needed from battle format (e.g., "3v3" -> 3)
+        try:
+            self.pokemon_needed = int(battle_format[0])
+            if self.pokemon_needed < 1 or self.pokemon_needed > 6:
+                self.pokemon_needed = 6  # Default to 6v6 if invalid
+        except (ValueError, IndexError):
+            self.pokemon_needed = 6  # Default to 6v6 if invalid
         battle_id = f"{challenger_id}_{target_id}"
         active_battles[battle_id] = {
             "challenger_id": challenger_id,
@@ -5417,15 +5947,20 @@ class BattlePartyView(View):
             "target_name": target_name,
             "challenger_party": [],
             "target_party": [],
+            "battle_format": battle_format,
+            "pokemon_needed": self.pokemon_needed,
             "status": "setup",
-            "view_message": None
+            "view_message": None,
+            "battle_phase": "normal",  # Add battle phase tracking
+            "pending_moves": {},       # Add pending moves tracking
+            "battle_activities": []    # Add activities tracking
         }
     def get_battle_embed(self):
         battle_id = f"{self.challenger_id}_{self.target_id}"
         battle_data = active_battles.get(battle_id, {})
         embed = discord.Embed(
             title="Choose your party",
-            description="Choose **6** pokémon to fight in the battle. The battle will begin once both trainers have chosen their party.",
+            description=f"Choose **{self.pokemon_needed}** pokémon to fight in this {self.battle_format} battle. The battle will begin once both trainers have chosen their party.",
             color=0xFFD700
         )
         challenger_party = battle_data.get("challenger_party", [])
@@ -5484,10 +6019,11 @@ class BattlePartyView(View):
         except:
             pass
 class ChallengeRequestView(View):
-    def __init__(self, challenger_id: int, target_id: int):
+    def __init__(self, challenger_id: int, target_id: int, battle_format: str = "6v6"):
         super().__init__(timeout=300)
         self.challenger_id = challenger_id
         self.target_id = target_id
+        self.battle_format = battle_format
         self.challenge_accepted = False
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success)
     async def accept_challenge(self, interaction: discord.Interaction, button: Button):
@@ -5513,7 +6049,7 @@ class ChallengeRequestView(View):
                 target_name = "Unknown"
         else:
             target_name = target.display_name
-        battle_view = BattlePartyView(self.challenger_id, self.target_id, challenger_name, target_name)
+        battle_view = BattlePartyView(self.challenger_id, self.target_id, challenger_name, target_name, self.battle_format)
         embed = battle_view.get_battle_embed()
         await interaction.response.edit_message(embed=embed, view=battle_view, content=None)
         battle_view.message = await interaction.original_response()
@@ -5574,13 +6110,15 @@ async def battle_add_command(ctx, *pokemon_orders):
         await ctx.send("You are not in an active battle! Use `@PokéKiro challenge @user` to start a battle.")
         return
     current_party = user_battle[user_party_key]
-    if len(current_party) >= 6:
-        await ctx.send("Your battle party is already full! (Maximum 6 pokémon)")
+    pokemon_needed = user_battle.get("pokemon_needed", 6)
+    battle_format = user_battle.get("battle_format", "6v6")
+    if len(current_party) >= pokemon_needed:
+        await ctx.send(f"Your battle party is already full! (Maximum {pokemon_needed} pokémon for {battle_format} battle)")
         return
     added_pokemon = []
     skipped_pokemon = []
     for pokemon_order in pokemon_order_list:
-        if len(current_party) >= 6:
+        if len(current_party) >= pokemon_needed:
             skipped_pokemon.append(f"#{pokemon_order} (party full)")
             continue
         pokemon_info = get_pokemon_by_order(trainer_data, pokemon_order)
@@ -5660,7 +6198,8 @@ async def battle_add_command(ctx, *pokemon_orders):
             embed.add_field(name=f"{target_name}'s Party", value=target_text, inline=False)
             challenger_party = user_battle.get("challenger_party", [])
             target_party = user_battle.get("target_party", [])
-            if len(challenger_party) == 6 and len(target_party) == 6:
+            pokemon_needed = user_battle.get("pokemon_needed", 6)
+            if len(challenger_party) == pokemon_needed and len(target_party) == pokemon_needed:
                 ready_embed = discord.Embed(
                     title="💥 Ready to battle!",
                     description="The battle will begin in 5 seconds.",
@@ -5703,7 +6242,7 @@ async def battle_add_command(ctx, *pokemon_orders):
                 await battle_view_message.edit(embed=ready_embed)
                 await asyncio.sleep(5)
                 battle_embed = discord.Embed(
-                    title=f"Battle between {challenger_name} and {target_name}",
+                    title=f"**Battle between {challenger_name} and {target_name}**",
                     description="Choose your moves using the interface below. After both players have chosen, the move will be executed.",
                     color=0x28A745
                 )
@@ -5785,37 +6324,59 @@ async def battle_add_command(ctx, *pokemon_orders):
             if feedback_parts:
                 await ctx.send("\n".join(feedback_parts))
 @bot.command(name="challenge")
-async def challenge_command(ctx, *, arg=None):
-    if arg is None:
-        await ctx.send("Usage: `@Pokékiro challenge @user`")
+async def challenge_command(ctx, battle_format=None, *, target_user=None):
+    # Handle the case where both parameters are provided
+    if battle_format is not None and target_user is not None:
+        # Validate battle format
+        valid_formats = ["1v1", "2v2", "3v3", "4v4", "5v5", "6v6"]
+        if battle_format not in valid_formats:
+            await ctx.send(f"Invalid battle format! Use one of: {', '.join(valid_formats)}\nExample: `@Pokékiro challenge 1v1 @username`")
+            return
+        
+        try:
+            user = await commands.MemberConverter().convert(ctx, target_user.strip())
+            await challenge_user_with_format(ctx, user, battle_format)
+        except commands.BadArgument:
+            await ctx.send(f"Please mention a valid user! Example: `@Pokékiro challenge {battle_format} @username`")
+            return
+    
+    # Handle the case where only one parameter is provided - no backwards compatibility
+    elif battle_format is not None and target_user is None:
+        await ctx.send("Usage: `@Pokékiro challenge <format> @user`\nFormats: 1v1, 2v2, 3v3, 4v4, 5v5, 6v6\nExample: `@Pokékiro challenge 1v1 @username`")
         return
-    try:
-        user = await commands.MemberConverter().convert(ctx, arg.strip())
-        if user.id == ctx.author.id:
-            await ctx.send("You can't challenge yourself!")
-            return
-        if user.bot:
-            await ctx.send("You can't challenge bots!")
-            return
-        challenger_data = get_trainer_data(ctx.author.id)
-        if not challenger_data:
-            await ctx.send(f"<@{ctx.author.id}> You need to register first! Use `register [Male/Female]` to get started.")
-            return
-        target_data = get_trainer_data(user.id)
-        if not target_data:
-            await ctx.send(f"<@{user.id}> needs to register first! Tell them to use `register [Male/Female]` to get started.")
-            return
-        challenger_name = ctx.author.display_name
-        target_name = user.display_name
-        view = ChallengeRequestView(ctx.author.id, user.id)
-        message = await ctx.send(
-            content=f"Challenging <@{user.id}> to a battle. Click the accept button to accept!",
-            view=view
-        )
-        view.message = message
-    except commands.BadArgument:
-        await ctx.send("Please mention a valid user! Example: `@Pokékiro challenge @username`")
+    
+    # Handle the case where no parameters are provided
+    else:
+        await ctx.send("Usage: `@Pokékiro challenge <format> @user`\nFormats: 1v1, 2v2, 3v3, 4v4, 5v5, 6v6\nExample: `@Pokékiro challenge 1v1 @username`")
         return
+
+async def challenge_user_with_format(ctx, user, battle_format):
+    """Handle the actual challenge logic with battle format"""
+    if user.id == ctx.author.id:
+        await ctx.send("You can't challenge yourself!")
+        return
+    if user.bot:
+        await ctx.send("You can't challenge bots!")
+        return
+    challenger_data = get_trainer_data(ctx.author.id)
+    if not challenger_data:
+        await ctx.send(f"<@{ctx.author.id}> You need to register first! Use `register [Male/Female]` to get started.")
+        return
+    target_data = get_trainer_data(user.id)
+    if not target_data:
+        await ctx.send(f"<@{user.id}> needs to register first! Tell them to use `register [Male/Female]` to get started.")
+        return
+    
+    challenger_name = ctx.author.display_name
+    target_name = user.display_name
+    
+    # Create custom view that includes the battle format
+    view = ChallengeRequestView(ctx.author.id, user.id, battle_format)
+    message = await ctx.send(
+        content=f"Challenging <@{user.id}> to a {battle_format} battle. Click the accept button to accept!",
+        view=view
+    )
+    view.message = message
 @bot.command(name="evolve")
 async def evolve_command(ctx):
     trainer_data = get_trainer_data(ctx.author.id)
@@ -6006,5 +6567,12 @@ async def pass_command(ctx):
         return
     
     await ctx.send("⏭️ You passed your turn!")
+
+# Add this function to clear executed moves at start of new turn
+def start_new_battle_turn(battle_data):
+    """Clear turn-specific data when starting a new battle turn"""
+    battle_data.pop('executed_moves_this_turn', None)
+    battle_data.pop('battle_activities', None)
+    battle_data['battle_activities'] = []
 
 bot.run(os.getenv('DISCORD_BOT_TOKEN'))
