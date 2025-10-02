@@ -419,145 +419,6 @@ def download_pokemon_sprite(pokemon_name, is_back_sprite=False, preserve_animati
             continue
     print(f"Failed to download sprite for {pokemon_name} from all available sources")
     return None
-def create_animated_battle_field(user_pokemon_name, opponent_pokemon_name, viewing_user_id, battle_data):
-    try:
-        print(f"Creating animated battle field with {user_pokemon_name} vs {opponent_pokemon_name}")
-        user_sprite_data = download_pokemon_sprite(user_pokemon_name, is_back_sprite=True, preserve_animation=True)
-        opponent_sprite_data = download_pokemon_sprite(opponent_pokemon_name, is_back_sprite=False, preserve_animation=True)
-        if not user_sprite_data or not opponent_sprite_data:
-            print("Failed to download animated sprites, falling back to static image")
-            return create_battle_field_image(user_pokemon_name, opponent_pokemon_name, viewing_user_id, battle_data)
-        battle_field = Image.open("battle_field.png").convert("RGBA")
-        battle_width, battle_height = battle_field.size
-        user_sprite_gif = Image.open(io.BytesIO(user_sprite_data))
-        opponent_sprite_gif = Image.open(io.BytesIO(opponent_sprite_data))
-        challenger_pokemon_pos = (250, 550)
-        target_pokemon_pos = (680, 275)
-        user_frames = getattr(user_sprite_gif, 'n_frames', 1)
-        opponent_frames = getattr(opponent_sprite_gif, 'n_frames', 1)
-        max_frames = max(user_frames, opponent_frames)
-        final_frames = []
-        durations = []
-        for frame_idx in range(max_frames):
-            frame = battle_field.copy()
-            user_sprite_gif.seek(frame_idx % user_frames)
-            original_size = user_sprite_gif.size
-            scale_factor = 3
-            new_size = (int(original_size[0] * scale_factor), int(original_size[1] * scale_factor))
-            user_frame = user_sprite_gif.convert("RGBA").resize(new_size, Image.Resampling.LANCZOS)
-            opponent_sprite_gif.seek(frame_idx % opponent_frames)
-            original_size = opponent_sprite_gif.size
-            new_size = (int(original_size[0] * scale_factor), int(original_size[1] * scale_factor))
-            opponent_frame = opponent_sprite_gif.convert("RGBA").resize(new_size, Image.Resampling.LANCZOS)
-            user_centered_pos = (challenger_pokemon_pos[0] - user_frame.width // 2,
-                                challenger_pokemon_pos[1] - user_frame.height // 2)
-            opponent_centered_pos = (target_pokemon_pos[0] - opponent_frame.width // 2,
-                                   target_pokemon_pos[1] - opponent_frame.height // 2)
-            frame.paste(user_frame, user_centered_pos, user_frame)
-            frame.paste(opponent_frame, opponent_centered_pos, opponent_frame)
-            
-            # Add challenger health bar at the specified position for each frame
-            try:
-                challenger_health_bar = Image.open("challenger_health_bar.png").convert("RGBA")
-                challenger_health_bar_pos = (449, 480)
-                frame.paste(challenger_health_bar, challenger_health_bar_pos, challenger_health_bar)
-            except Exception as e:
-                print(f"Failed to add challenger health bar to frame {frame_idx}: {e}")
-            
-            # Add target health bar for opponent Pokemon
-            try:
-                target_health_bar = Image.open("target_health_bar.png").convert("RGBA")
-                target_health_bar_pos = (0, 120)
-                frame.paste(target_health_bar, target_health_bar_pos, target_health_bar)
-            except Exception as e:
-                print(f"Failed to add target health bar to frame {frame_idx}: {e}")
-            
-            final_frames.append(frame)
-            try:
-                duration = user_sprite_gif.info.get('duration', 100)
-            except:
-                duration = 100
-            durations.append(duration)
-        image_buffer = io.BytesIO()
-        final_frames[0].save(
-            image_buffer,
-            format='GIF',
-            save_all=True,
-            append_images=final_frames[1:],
-            duration=150,
-            loop=0,
-            optimize=True
-        )
-        image_buffer.seek(0)
-        print(f"Created animated battle field with {max_frames} frames")
-        return image_buffer
-    except Exception as e:
-        print(f"Error creating animated battle field: {e}")
-        return create_battle_field_image(user_pokemon_name, opponent_pokemon_name, viewing_user_id, battle_data)
-def create_battle_field_image(user_pokemon_name, opponent_pokemon_name, viewing_user_id, battle_data):
-    try:
-        print(f"Creating battle field with {user_pokemon_name} vs {opponent_pokemon_name}")
-        battle_field = Image.open("battle_field.png").convert("RGBA")
-        battle_width, battle_height = battle_field.size
-        print(f"Battle field size: {battle_width}x{battle_height}")
-        challenger_pokemon_pos = (250, 550)
-        target_pokemon_pos = (670, 280)
-        print(f"Challenger sprite position: {challenger_pokemon_pos}, Target sprite position: {target_pokemon_pos}")
-        challenger_sprite = download_pokemon_sprite(user_pokemon_name, is_back_sprite=True)
-        if challenger_sprite:
-            print(f"Downloaded challenger sprite for {user_pokemon_name}: {challenger_sprite.size} {challenger_sprite.mode}")
-            original_size = challenger_sprite.size
-            scale_factor = 2.5
-            new_size = (int(original_size[0] * scale_factor), int(original_size[1] * scale_factor))
-            challenger_sprite = challenger_sprite.resize(new_size, Image.Resampling.LANCZOS)
-            challenger_centered_pos = (challenger_pokemon_pos[0] - challenger_sprite.width // 2,
-                                     challenger_pokemon_pos[1] - challenger_sprite.height // 2)
-            battle_field.paste(challenger_sprite, challenger_centered_pos, challenger_sprite)
-            print(f"Pasted challenger sprite at centered position {challenger_centered_pos}")
-        else:
-            print(f"Failed to download challenger sprite for {user_pokemon_name}")
-        target_sprite = download_pokemon_sprite(opponent_pokemon_name, is_back_sprite=False)
-        if target_sprite:
-            print(f"Downloaded target sprite for {opponent_pokemon_name}: {target_sprite.size} {target_sprite.mode}")
-            original_size = target_sprite.size
-            scale_factor = 2.5
-            new_size = (int(original_size[0] * scale_factor), int(original_size[1] * scale_factor))
-            target_sprite = target_sprite.resize(new_size, Image.Resampling.LANCZOS)
-            target_centered_pos = (target_pokemon_pos[0] - target_sprite.width // 2,
-                                 target_pokemon_pos[1] - target_sprite.height // 2)
-            battle_field.paste(target_sprite, target_centered_pos, target_sprite)
-            print(f"Pasted target sprite at centered position {target_centered_pos}")
-        else:
-            print(f"Failed to download target sprite for {opponent_pokemon_name}")
-        
-        # Add challenger health bar at the specified position
-        try:
-            challenger_health_bar = Image.open("challenger_health_bar.png").convert("RGBA")
-            challenger_health_bar_pos = (459, 480)
-            battle_field.paste(challenger_health_bar, challenger_health_bar_pos, challenger_health_bar)
-            print(f"Added challenger health bar at position {challenger_health_bar_pos}")
-        except Exception as e:
-            print(f"Failed to add challenger health bar: {e}")
-        
-        # Add target health bar for opponent Pokemon
-        try:
-            target_health_bar = Image.open("target_health_bar.png").convert("RGBA")
-            target_health_bar_pos = (5, 120)
-            battle_field.paste(target_health_bar, target_health_bar_pos, target_health_bar)
-            print(f"Added target health bar at position {target_health_bar_pos}")
-        except Exception as e:
-            print(f"Failed to add target health bar: {e}")
-        
-        image_buffer = io.BytesIO()
-        battle_field.save(image_buffer, format='PNG')
-        image_buffer.seek(0)
-        print("Battle field image created successfully")
-        return image_buffer
-    except Exception as e:
-        print(f"Error creating battle field image: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
 def fix_existing_pokemon_genders():
     trainers = load_trainers()
     updated = False
@@ -2954,19 +2815,9 @@ async def trade_add(ctx, *args):
                 await trade_message.edit(embed=embed)
             except Exception as e:
                 print(f"Error updating trade embed: {e}")
-                feedback_parts = []
-                if added_pokemon:
-                    feedback_parts.append(f"Added: {', '.join(added_pokemon)}")
-                if skipped_pokemon:
-                    feedback_parts.append(f"Skipped: {', '.join(skipped_pokemon)}")
-                await ctx.send("\n".join(feedback_parts) if feedback_parts else "No Pokemon were added.")
-        else:
-            feedback_parts = []
-            if added_pokemon:
-                feedback_parts.append(f"Added: {', '.join(added_pokemon)}")
-            if skipped_pokemon:
-                feedback_parts.append(f"Skipped: {', '.join(skipped_pokemon)}")
-            await ctx.send("\n".join(feedback_parts) if feedback_parts else "No Pokemon were added.")
+                # Don't send feedback messages - trade embed update is enough
+                pass
+        # Don't send feedback messages for trade add - embed update is enough
 @trade.command(name="cancel")
 async def trade_cancel(ctx):
     user_id = ctx.author.id
@@ -4789,13 +4640,10 @@ class BattleInterfaceView(View):
                 inline=False
             )
             
-            # Create battlefield image for the overview
-            challenger_image_buffer = create_animated_battle_field(
-                challenger_pokemon.get('name', 'Unknown'), 
-                target_pokemon.get('name', 'Unknown'), 
-                challenger_id, 
-                battle_data
-            )
+            # Use simple battle field image without sprites or health bars
+            challenger_image_buffer = None
+            with open("battle_field.png", "rb") as f:
+                challenger_image_buffer = io.BytesIO(f.read())
             
             if challenger_image_buffer:
                 import time
@@ -4846,20 +4694,12 @@ class BattleInterfaceView(View):
             challenger_party = battle_data.get('challenger_party', [])
             target_party = battle_data.get('target_party', [])
             
-            # Regenerate battlefield images with the switched Pokemon
-            print(f"[DEBUG] Regenerating battlefield images for switch")
-            challenger_image_buffer = create_animated_battle_field(
-                challenger_pokemon.get('name', 'Unknown'), 
-                target_pokemon.get('name', 'Unknown'), 
-                challenger_id, 
-                battle_data
-            )
-            target_image_buffer = create_animated_battle_field(
-                target_pokemon.get('name', 'Unknown'),
-                challenger_pokemon.get('name', 'Unknown'),
-                target_id,
-                battle_data
-            )
+            # Use simple battle field image without sprites or health bars
+            print(f"[DEBUG] Using simple battle field image for switch")
+            with open("battle_field.png", "rb") as f:
+                battle_field_data = f.read()
+            challenger_image_buffer = io.BytesIO(battle_field_data)
+            target_image_buffer = io.BytesIO(battle_field_data)
             
             # Create updated interfaces for both players with current active Pokemon
             challenger_embed = create_battle_interface_embed(challenger_pokemon, challenger_party, target_name)
@@ -6242,9 +6082,9 @@ async def battle_add_command(ctx, *pokemon_orders):
                 await battle_view_message.edit(embed=ready_embed)
                 await asyncio.sleep(5)
                 battle_embed = discord.Embed(
-                    title=f"**Battle between {challenger_name} and {target_name}**",
-                    description="Choose your moves using the interface below. After both players have chosen, the move will be executed.",
-                    color=0x28A745
+                    title=f"**Battle between {challenger_name} and {target_name}.**",
+                    description="Choose your moves in DMs. After both players have chosen, the move will be executed.",
+                    color=0xFFD700
                 )
                 challenger_pokemon_lines = []
                 for p in challenger_party:
@@ -6260,7 +6100,9 @@ async def battle_add_command(ctx, *pokemon_orders):
                         )
                         max_hp = calculated_stats['hp']
                     current_hp = p.get('current_hp', max_hp)
-                    challenger_pokemon_lines.append(f"L{p['level']} {p['iv_percentage']}% {p['name'].title()}{p['gender']} (#{p.get('order', 'N/A')})  •  {current_hp}/{max_hp} HP")
+                    # Convert gender to proper emoji format
+                    gender_emoji = convert_text_gender_to_emoji(p['gender'])
+                    challenger_pokemon_lines.append(f"Lvl.{p['level']} {p['iv_percentage']}% {p['name'].title()}{gender_emoji} • {current_hp}")
                 challenger_pokemon_list = "\n".join(challenger_pokemon_lines)
                 battle_embed.add_field(name=challenger_name, value=challenger_pokemon_list, inline=False)
                 target_pokemon_lines = []
@@ -6277,33 +6119,22 @@ async def battle_add_command(ctx, *pokemon_orders):
                         )
                         max_hp = calculated_stats['hp']
                     current_hp = p.get('current_hp', max_hp)
-                    target_pokemon_lines.append(f"L{p['level']} {p['iv_percentage']}% {p['name'].title()}{p['gender']} (#{p.get('order', 'N/A')})  •  {current_hp}/{max_hp} HP")
+                    # Convert gender to proper emoji format
+                    gender_emoji = convert_text_gender_to_emoji(p['gender'])
+                    target_pokemon_lines.append(f"Lvl.{p['level']} {p['iv_percentage']}% {p['name'].title()}{gender_emoji} • {current_hp}")
                 target_pokemon_list = "\n".join(target_pokemon_lines)
                 battle_embed.add_field(name=target_name, value=target_pokemon_list, inline=False)
-                challenger_first_pokemon = challenger_party[0]["name"] if challenger_party else "pikachu"
-                target_first_pokemon = target_party[0]["name"] if target_party else "pikachu"
-                challenger_id = user_battle.get("challenger_id")
-                target_id = user_battle.get("target_id")
-                challenger_battle_image = create_animated_battle_field(
-                    challenger_first_pokemon, target_first_pokemon,
-                    challenger_id, battle_data
-                )
-                target_battle_image = challenger_battle_image
-                battle_embed.set_image(url="attachment://battle_field_with_sprites.gif")
-                if challenger_battle_image:
-                    file = discord.File(challenger_battle_image, filename="battle_field_with_sprites.gif")
+                # Use only the battle_field.png image without health bars or pokemon gifs
+                battle_embed.set_image(url="attachment://battle_field.png")
+                with open("battle_field.png", "rb") as f:
+                    file = discord.File(f, filename="battle_field.png")
                     await battle_view_message.edit(embed=battle_embed, attachments=[file])
-                else:
-                    with open("battle_field.png", "rb") as f:
-                        file = discord.File(f, filename="battle_field_with_sprites.gif")
-                        await battle_view_message.edit(embed=battle_embed, attachments=[file])
                 if battle_id in active_battles:
                     active_battles[battle_id]["battle_started"] = True
                     active_battles[battle_id]["turn"] = 1
                     active_battles[battle_id]["turn_actions"] = {}
                     active_battles[battle_id]["challenger_current_pokemon"] = challenger_party[0]
                     active_battles[battle_id]["target_current_pokemon"] = target_party[0]
-                await battle_view_message.edit(embed=battle_embed)
                 
                 # Send battle interface to both players
                 await send_battle_interface_to_players(battle_id, challenger_id, target_id, challenger_party, target_party, challenger_name, target_name, battle_view_message.channel)
@@ -6316,13 +6147,8 @@ async def battle_add_command(ctx, *pokemon_orders):
                 await battle_view_message.edit(embed=embed)
         except Exception as e:
             print(f"Error updating battle embed: {e}")
-            feedback_parts = []
-            if added_pokemon:
-                feedback_parts.append(f"Added: {', '.join(added_pokemon)}")
-            if skipped_pokemon:
-                feedback_parts.append(f"Skipped: {', '.join(skipped_pokemon)}")
-            if feedback_parts:
-                await ctx.send("\n".join(feedback_parts))
+            # Don't send feedback messages - battle embed update is enough
+            pass
 @bot.command(name="challenge")
 async def challenge_command(ctx, battle_format=None, *, target_user=None):
     # Handle the case where both parameters are provided
