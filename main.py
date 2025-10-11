@@ -25,6 +25,7 @@ from stats_iv_calculation import (
 from moves import POKEMON_MOVES, get_move_by_name
 from type_effectiveness import get_type_effectiveness, get_effectiveness_text
 from movesets_scraper import get_all_moves_comprehensive
+from pokedex import pokedex
 import random
 import json
 import string
@@ -372,53 +373,6 @@ def create_spawned_pokemon(pokemon_data, level=None):
         "current_hp": calculated_stats.get("hp", 0)
     }
     return spawned_pokemon
-def get_pokemon_sprite_url(pokemon_name, is_back_sprite=False):
-    sprite_name = pokemon_name.lower().replace(" ", "").replace("'", "").replace(".", "").replace("-", "")
-    special_names = {
-        "charizard": "charizard",
-        "rowlet": "rowlet",
-        "mr.mime": "mrmime",
-        "farfetch'd": "farfetchd",
-        "ho-oh": "hooh"
-    }
-    if sprite_name in special_names:
-        sprite_name = special_names[sprite_name]
-    sprite_urls = []
-    if is_back_sprite:
-        sprite_urls.append(f"https://play.pokemonshowdown.com/sprites/gen5ani-back/{sprite_name}.gif")
-        sprite_urls.append(f"https://play.pokemonshowdown.com/sprites/xyani-back/{sprite_name}.gif")
-        sprite_urls.append(f"https://play.pokemonshowdown.com/sprites/gen5-back/{sprite_name}.png")
-    else:
-        sprite_urls.append(f"https://play.pokemonshowdown.com/sprites/gen5ani/{sprite_name}.gif")
-        sprite_urls.append(f"https://play.pokemonshowdown.com/sprites/xyani/{sprite_name}.gif")
-        sprite_urls.append(f"https://play.pokemonshowdown.com/sprites/gen5/{sprite_name}.png")
-    return sprite_urls
-def download_pokemon_sprite(pokemon_name, is_back_sprite=False, preserve_animation=False):
-    sprite_urls = get_pokemon_sprite_url(pokemon_name, is_back_sprite)
-    for sprite_url in sprite_urls:
-        try:
-            response = requests.get(sprite_url, timeout=10)
-            response.raise_for_status()
-            if preserve_animation:
-                print(f"Successfully downloaded animated sprite for {pokemon_name} from {sprite_url}")
-                return io.BytesIO(response.content)
-            sprite_image = Image.open(io.BytesIO(response.content))
-            if sprite_image.format == 'GIF':
-                sprite_image.seek(0)
-                sprite_image = sprite_image.convert("RGBA")
-            else:
-                if sprite_image.mode != 'RGBA':
-                    sprite_image = sprite_image.convert("RGBA")
-            print(f"Successfully downloaded sprite for {pokemon_name} from {sprite_url}")
-            return sprite_image
-        except requests.exceptions.RequestException as e:
-            print(f"Failed to download sprite for {pokemon_name} from {sprite_url}: {e}")
-            continue
-        except Exception as e:
-            print(f"Error processing sprite for {pokemon_name} from {sprite_url}: {e}")
-            continue
-    print(f"Failed to download sprite for {pokemon_name} from all available sources")
-    return None
 def fix_existing_pokemon_genders():
     trainers = load_trainers()
     updated = False
@@ -1099,7 +1053,6 @@ async def starter_selection(ctx):
         value="<:sprigatito:1390607793266102302>  Sprigatito  ·  <:fuecoco:1390607859049435221>  Fuecoco  ·  <:quaxly:1390607905115602944>  Quaxly",
         inline=False
     )
-    embed.set_image(url="https://cdn.dribbble.com/userupload/21948821/file/original-8de46059d7383343f9a16199b5d89488.gif")
     await ctx.send(embed=embed)
 @bot.command()
 async def pick(ctx, *, pokemon_name: str = ""):
@@ -4640,31 +4593,23 @@ class BattleInterfaceView(View):
                 inline=False
             )
             
-            # Use simple battle field image without sprites or health bars
-            challenger_image_buffer = None
-            with open("battle_field.png", "rb") as f:
-                challenger_image_buffer = io.BytesIO(f.read())
-            
-            if challenger_image_buffer:
+            # Use simple battle field image
+            try:
+                with open("battle_field.png", "rb") as f:
+                    battle_image_buffer = io.BytesIO(f.read())
+                
                 import time
                 timestamp = int(time.time())
+                filename = f"battle_overview_{timestamp}.png"
                 
-                challenger_image_buffer.seek(0)
-                header = challenger_image_buffer.read(4)
-                challenger_image_buffer.seek(0)
-                
-                if header.startswith(b'GIF8'):
-                    extension = "gif"
-                else:
-                    extension = "png"
-                
-                filename = f"battle_overview_{timestamp}.{extension}"
-                file = discord.File(challenger_image_buffer, filename=filename)
+                file = discord.File(battle_image_buffer, filename=filename)
                 overview_embed.set_image(url=f"attachment://{filename}")
                 
                 # Send the overview to channel
                 await self.channel.send(embed=overview_embed, file=file)
                 print(f'[DEBUG] Sent updated battle overview to channel')
+            except Exception as e:
+                print(f'[DEBUG] Error sending battle image: {e}')
             
         except Exception as e:
             print(f'[DEBUG] Error sending updated battle overview: {e}')
@@ -4694,12 +4639,8 @@ class BattleInterfaceView(View):
             challenger_party = battle_data.get('challenger_party', [])
             target_party = battle_data.get('target_party', [])
             
-            # Use simple battle field image without sprites or health bars
-            print(f"[DEBUG] Using simple battle field image for switch")
-            with open("battle_field.png", "rb") as f:
-                battle_field_data = f.read()
-            challenger_image_buffer = io.BytesIO(battle_field_data)
-            target_image_buffer = io.BytesIO(battle_field_data)
+            # Use simple battle field image
+            print(f"[DEBUG] Using battle field image for switch")
             
             # Create updated interfaces for both players with current active Pokemon
             challenger_embed = create_battle_interface_embed(challenger_pokemon, challenger_party, target_name)
@@ -4774,27 +4715,23 @@ class BattleInterfaceView(View):
                     inline=False
                 )
                 
-                # Create battlefield image for the overview using challenger's perspective
-                if challenger_image_buffer:
+                # Use simple battle field image
+                try:
+                    with open("battle_field.png", "rb") as f:
+                        battle_image_buffer = io.BytesIO(f.read())
+                    
                     import time
                     timestamp = int(time.time())
+                    filename = f"battle_overview_{timestamp}.png"
                     
-                    challenger_image_buffer.seek(0)
-                    header = challenger_image_buffer.read(4)
-                    challenger_image_buffer.seek(0)
-                    
-                    if header.startswith(b'GIF8'):
-                        extension = "gif"
-                    else:
-                        extension = "png"
-                    
-                    filename = f"battle_overview_{timestamp}.{extension}"
-                    file = discord.File(challenger_image_buffer, filename=filename)
+                    file = discord.File(battle_image_buffer, filename=filename)
                     overview_embed.set_image(url=f"attachment://{filename}")
                     
                     # Send the overview to channel
                     await self.channel.send(embed=overview_embed, file=file)
                     print(f'[DEBUG] Sent battle overview to channel after Pokemon switch')
+                except Exception as img_error:
+                    print(f'[DEBUG] Error sending battle image: {img_error}')
                 
             except Exception as e:
                 print(f'[DEBUG] Error sending battle overview to channel: {e}')
@@ -6124,7 +6061,7 @@ async def battle_add_command(ctx, *pokemon_orders):
                     target_pokemon_lines.append(f"Lvl.{p['level']} {p['iv_percentage']}% {p['name'].title()}{gender_emoji} • {current_hp}")
                 target_pokemon_list = "\n".join(target_pokemon_lines)
                 battle_embed.add_field(name=target_name, value=target_pokemon_list, inline=False)
-                # Use only the battle_field.png image without health bars or pokemon gifs
+                # Use simple battle field image
                 battle_embed.set_image(url="attachment://battle_field.png")
                 with open("battle_field.png", "rb") as f:
                     file = discord.File(f, filename="battle_field.png")
@@ -6396,9 +6333,170 @@ async def pass_command(ctx):
 
 # Add this function to clear executed moves at start of new turn
 def start_new_battle_turn(battle_data):
-    """Clear turn-specific data when starting a new battle turn"""
     battle_data.pop('executed_moves_this_turn', None)
     battle_data.pop('battle_activities', None)
     battle_data['battle_activities'] = []
+
+@bot.command(name="pokédex")
+async def pokedex_command(ctx, action=None, *, query=None):
+    if not action or action.lower() != "info":
+        await ctx.send("Usage: `@Pokékiro#8400 pokédex info <pokémon_name>` or `@Pokékiro#8400 pokédex info <#pokédex_id>`")
+        return
+    
+    if not query:
+        await ctx.send("Please provide a Pokémon name or Pokédex ID!")
+        return
+    
+    query = query.strip()
+    pokemon_data = None
+    
+    from pokedex import pokedex, pokedex_megas, pokedex_gigantamax, pokedex_alolan, pokedex_paldean, pokedex_hisuian, pokedex_galarian, pokedex_alternate_forms
+    
+    all_pokedex_lists = [
+        pokedex, 
+        pokedex_megas, 
+        pokedex_gigantamax, 
+        pokedex_alolan, 
+        pokedex_paldean, 
+        pokedex_hisuian, 
+        pokedex_galarian, 
+        pokedex_alternate_forms
+    ]
+    
+    if query.startswith('#'):
+        try:
+            pokedex_id = int(query[1:])
+            for poke_list in all_pokedex_lists:
+                for poke in poke_list:
+                    try:
+                        if int(poke.get("ID", "0")) == pokedex_id:
+                            pokemon_data = poke
+                            break
+                    except ValueError:
+                        continue
+                if pokemon_data:
+                    break
+        except ValueError:
+            await ctx.send("Invalid Pokédex ID!")
+            return
+    else:
+        search_name = query.lower()
+        search_name_normalized = search_name.replace("'", "'").replace("'", "'")
+        
+        for poke_list in all_pokedex_lists:
+            for poke in poke_list:
+                poke_name = poke.get("Name", "").lower()
+                poke_name_normalized = poke_name.replace("'", "'").replace("'", "'")
+                if poke_name_normalized == search_name_normalized or poke_name == search_name:
+                    pokemon_data = poke
+                    break
+            if pokemon_data:
+                break
+        
+        if not pokemon_data:
+            if search_name.startswith("mega "):
+                reversed_name = search_name.replace("mega ", "", 1) + " mega"
+                reversed_name_normalized = reversed_name.replace("'", "'").replace("'", "'")
+                for poke_list in all_pokedex_lists:
+                    for poke in poke_list:
+                        poke_name = poke.get("Name", "").lower()
+                        poke_name_normalized = poke_name.replace("'", "'").replace("'", "'")
+                        if poke_name_normalized == reversed_name_normalized or poke_name == reversed_name:
+                            pokemon_data = poke
+                            break
+                    if pokemon_data:
+                        break
+    
+    if not pokemon_data:
+        await ctx.send(f"Pokémon '{query}' not found in Pokédex!")
+        return
+    
+    type_emojis = {
+        'normal': '<:normal_type:1406551478184706068>', 'fire': '<:fire_type:1406552697653559336>', 
+        'water': '<:water_type:1406552467319029860>', 'electric': '<:electric_type:1406551930406436935>', 
+        'grass': '<:grass_type:1406552601415122945>', 'ice': '<:ice_type:1406553274584399934>', 
+        'fighting': '<:fighting_type:1406551764483702906>', 'poison': '<:poison_type:1406555023382413343>', 
+        'ground': '<:ground_type:1406552961253117993>', 'flying': '<:flying_type:1406553554897862779>',
+        'psychic': '<:psychic_type:1406552310808576122>', 'bug': '<:bug_type:1406555435980427358>', 
+        'rock': '<:rock_type:1406552394950512711>', 'ghost': '<:ghost_type:1406553684887998484>', 
+        'dragon': '<:dragon_type:1406552069669916742>', 'dark': '<:dark_type:1406553165624774666>', 
+        'steel': '<:steel_type:1406552865291501629>', 'fairy': '<:fairy_type:1406552167283691691>'
+    }
+    
+    gender_emoji_map = {
+        'male': '<:male:1400956267979214971>',
+        'female': '<:female:1400956073573224520>',
+        'genderless': '<:unknown:1401145566863560755>'
+    }
+    
+    embed = discord.Embed(
+        title=f"**#{pokemon_data['ID']} {pokemon_data['Name']}**",
+        description=pokemon_data.get('Pokedex Entry', ''),
+        color=0xFFD700
+    )
+    
+    types_text = ""
+    for poke_type in pokemon_data.get('Types', []):
+        type_emoji = type_emojis.get(poke_type.lower(), '⚪')
+        types_text += f"{type_emoji} {poke_type}\n"
+    if types_text:
+        embed.add_field(name="**Types**", value=types_text, inline=False)
+    
+    embed.add_field(name="**Region**", value=pokemon_data.get('Region', 'Unknown'), inline=False)
+    embed.add_field(name="**Catchable**", value=pokemon_data.get('Catchable', 'Unknown'), inline=False)
+    
+    base_stats = pokemon_data.get('Base Stats', {})
+    stats_text = f"**HP:** {base_stats.get('Hp', 0)}\n"
+    stats_text += f"**Attack:** {base_stats.get('Attack', 0)}\n"
+    stats_text += f"**Defense:** {base_stats.get('Defense', 0)}\n"
+    stats_text += f"**Sp. Atk:** {base_stats.get('Special Attack', 0)}\n"
+    stats_text += f"**Sp. Def:** {base_stats.get('Special Defense', 0)}\n"
+    stats_text += f"**Speed:** {base_stats.get('Speed', 0)}\n"
+    stats_text += f"**Total: {base_stats.get('Total', 0)}**"
+    embed.add_field(name="**Base Stats**", value=stats_text, inline=False)
+    
+    appearance = pokemon_data.get('Appearance', {})
+    appearance_text = f"Height: {appearance.get('Height', 'Unknown')}\n"
+    appearance_text += f"Weight: {appearance.get('Weight', 'Unknown')}"
+    embed.add_field(name="**Appearance**", value=appearance_text, inline=False)
+    
+    gender_ratio = pokemon_data.get('Gender Ratio', {})
+    is_genderless = False
+    if isinstance(gender_ratio, dict) and gender_ratio:
+        male_pct = gender_ratio.get('Male', '')
+        female_pct = gender_ratio.get('Female', '')
+        
+        if male_pct == "Genderless" or female_pct == "Genderless" or (not male_pct and not female_pct):
+            gender_text = f"{gender_emoji_map['genderless']} Genderless"
+            is_genderless = True
+        elif male_pct or female_pct:
+            gender_text = f"{gender_emoji_map['male']} {male_pct} - {gender_emoji_map['female']} {female_pct}"
+        else:
+            gender_text = f"{gender_emoji_map['genderless']} Genderless"
+            is_genderless = True
+    else:
+        gender_text = f"{gender_emoji_map['genderless']} Genderless"
+        is_genderless = True
+    embed.add_field(name="**Gender Ratio**", value=gender_text, inline=False)
+    
+    egg_groups = pokemon_data.get('Egg Groups', [])
+    if egg_groups and egg_groups != ['Undiscovered'] and not is_genderless:
+        egg_text = '\n'.join(egg_groups)
+    else:
+        egg_text = "Undiscovered"
+    embed.add_field(name="**Egg Groups**", value=egg_text, inline=False)
+    
+    hatch_time = pokemon_data.get('Hatch Time', '')
+    if is_genderless or egg_text == "Undiscovered":
+        hatch_time = "Undiscovered"
+    embed.add_field(name="**Hatch Time**", value=hatch_time, inline=False)
+    
+    artwork_file = pokemon_data.get('Artwork', '')
+    if artwork_file and os.path.exists(f"artworks/{artwork_file}"):
+        file = discord.File(f"artworks/{artwork_file}", filename=artwork_file)
+        embed.set_image(url=f"attachment://{artwork_file}")
+        await ctx.send(embed=embed, file=file)
+    else:
+        await ctx.send(embed=embed)
 
 bot.run(os.getenv('DISCORD_BOT_TOKEN'))

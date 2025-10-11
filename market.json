@@ -1,0 +1,245 @@
+{
+  "listings": [
+    {
+      "market_id": 5,
+      "user_id": "1264680921366528113",
+      "order_number": 6,
+      "amount": 6,
+      "pokemon": {
+        "dex": 19,
+        "name": "rattata",
+        "gender": "<:male:1400956267979214971>",
+        "level": 32,
+        "iv_percentage": 50.54,
+        "ivs": {
+          "hp": 20,
+          "attack": 25,
+          "defense": 4,
+          "sp_attack": 16,
+          "sp_defense": 0,
+          "speed": 29
+        },
+        "nature": "calm",
+        "ability": "Run Away",
+        "base_stats": {
+          "hp": 30,
+          "attack": 56,
+          "defense": 35,
+          "sp_attack": 25,
+          "sp_defense": 35,
+          "speed": 72
+        },
+        "calculated_stats": {
+          "hp": 67,
+          "attack": 43,
+          "defense": 28,
+          "sp_attack": 26,
+          "sp_defense": 29,
+          "speed": 60
+        },
+        "evs": {
+          "hp": 0,
+          "attack": 0,
+          "defense": 0,
+          "sp_attack": 0,
+          "sp_defense": 0,
+          "speed": 0
+        }
+      },
+      "listed_at": "2025-08-11 15:01:19"
+    },
+    {
+      "market_id": 6,
+      "user_id": "1264680921366528113",
+      "order_number": 5,
+      "amount": 1,
+      "pokemon": {
+        "dex": 19,
+        "name": "rattata",
+        "gender": "<:male:1400956267979214971>",
+        "level": 5,
+        "iv_percentage": 45.16,
+        "ivs": {
+          "hp": 27,
+          "attack": 4,
+          "defense": 4,
+          "sp_attack": 5,
+          "sp_defense": 31,
+          "speed": 13
+        },
+        "nature": "bold",
+        "ability": "Run Away",
+        "base_stats": {
+          "hp": 30,
+          "attack": 56,
+          "defense": 35,
+          "sp_attack": 25,
+          "sp_defense": 35,
+          "speed": 72
+        },
+        "calculated_stats": {
+          "hp": 19,
+          "attack": 9,
+          "defense": 8,
+          "sp_attack": 7,
+          "sp_defense": 10,
+          "speed": 12
+        },
+        "evs": {
+          "hp": 0,
+          "attack": 0,
+          "defense": 0,
+          "sp_attack": 0,
+          "sp_defense": 0,
+          "speed": 0
+        }
+      },
+      "listed_at": "2025-08-11 15:02:42"
+    },
+    {
+      "market_id": 8,
+      "user_id": "1264680921366528113",
+      "order_number": 3,
+      "amount": 6,
+      "pokemon": {
+        "dex": 19,
+        "name": "rattata",
+        "gender": "<:female:1400956073573224520>",
+        "level": 9,
+        "iv_percentage": 40.86,
+        "ivs": {
+          "hp": 6,
+          "attack": 8,
+          "defense": 16,
+          "sp_attack": 10,
+          "sp_defense": 25,
+          "speed": 11
+        },
+        "nature": "mild",
+        "ability": "Run Away",
+        "base_stats": {
+          "hp": 30,
+          "attack": 56,
+          "defense": 35,
+          "sp_attack": 25,
+          "sp_defense": 35,
+          "speed": 72
+        },
+        "calculated_stats": {
+          "hp": 24,
+          "attack": 15,
+          "defense": 10,
+          "sp_attack": 11,
+          "sp_defense": 13,
+          "speed": 18
+        },
+        "evs": {
+          "hp": 0,
+          "attack": 0,
+          "defense": 0,
+          "sp_attack": 0,
+          "sp_defense": 0,
+          "speed": 0
+        }
+      },
+      "listed_at": "2025-08-11 15:13:54"
+    },
+    {
+      "market_id": 9,
+      "user_id": "1264680921366528113",
+      "order_number": 4,
+      "amount": 5,
+      "pokemon": {
+        "dex": 13,
+        "name": "weedle",
+        "gender": "<:female:1400956073573224520>",
+        "level": 30,
+        "iv_percentage": 45.16,
+        "ivs": {
+          "hp": 18,
+          "attack": 27,
+          "defense": 11,
+          "sp_attack": 16,
+          "sp_defense": 4,
+          "speed": 8
+        },
+        "nature": "jolly",
+        "ability": "Shield Dust",
+        "base_stats": {
+          "hp": 40,
+          "attack": 35,
+          "defense": 30,
+          "sp_attack": 20,
+          "sp_defense": 20,
+          "speed": 50
+        },
+        "calculated_stats": {
+          "hp": 69,
+          "attack": 34,
+          "defense": 26,
+          "sp_attack": 18,
+          "sp_defense": 18,
+          "speed": 40
+        },
+        "evs": {
+          "hp": 0,
+          "attack": 0,
+          "defense": 0,
+          "sp_attack": 0,
+          "sp_defense": 0,
+          "speed": 0
+        }
+      },
+      "listed_at": "2025-08-12 01:49:25"
+    },
+    {
+      "market_id": 12,
+      "user_id": "1264680921366528113",
+      "order_number": 2,
+      "amount": 2,
+      "pokemon": {
+        "dex": 20,
+        "name": "raticate",
+        "gender": "<:male:1400956267979214971>",
+        "level": 37,
+        "iv_percentage": 34.41,
+        "ivs": {
+          "hp": 12,
+          "attack": 8,
+          "defense": 4,
+          "sp_attack": 25,
+          "sp_defense": 5,
+          "speed": 10
+        },
+        "nature": "naughty",
+        "ability": "Run Away",
+        "base_stats": {
+          "hp": 55,
+          "attack": 81,
+          "defense": 60,
+          "sp_attack": 50,
+          "sp_defense": 70,
+          "speed": 97
+        },
+        "calculated_stats": {
+          "hp": 92,
+          "attack": 73,
+          "defense": 50,
+          "sp_attack": 51,
+          "sp_defense": 52,
+          "speed": 80
+        },
+        "evs": {
+          "hp": 0,
+          "attack": 0,
+          "defense": 0,
+          "sp_attack": 0,
+          "sp_defense": 0,
+          "speed": 0
+        }
+      },
+      "listed_at": "2025-08-12 01:56:48"
+    }
+  ],
+  "next_id": 18
+}
